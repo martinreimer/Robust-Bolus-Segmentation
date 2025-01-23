@@ -6,26 +6,20 @@ This repository contains the code and data for my Master's thesis project titled
 
 ## Project Timeline
 - **Duration**: 15 January 2025 – 15 July 2025
-- **Key Goals**:
-  1. Create a comprehensive dataset combining sources from the United States, Germany, and international partners.
-  2. Train and evaluate U-Net-like architectures.
-  3. Assess the impact of data quality using metrics such as Natural Image Quality Evaluator (NIQE).
-  4. Explore model robustness and generalizability across diverse datasets.
-  5. Write and submit a paper based on the findings.
 
 ---
 
 ## Repository Structure
 
 ### Folders
-1. **`data_processing_analysis/`**  
+1. **`src/data/`**  
    Contains scripts for preparing, cleaning, and analyzing datasets. Tasks include:
    - Selecting high-quality videos.
    - Extracting swallows from video frames.
    - Annotating segmentation labels.
    - Analyzing data quality using NIQE, PSNR, and contrast metrics.
 
-2. **`modeling/`**  
+2. **`src/models/`**  
    Contains scripts and configurations for training and evaluating machine learning models. Tasks include:
    - Training U-Net and its variations (e.g., small, medium, large, with/without attention).
    - Experimenting with additional architectures to improve robustness and explainability.
@@ -36,6 +30,6 @@ This repository contains the code and data for my Master's thesis project titled
 - `requirements.txt`: Python dependencies for running the project.
 
 
-### used
-- labebox-export
-- -PyTorch U-Net
+### Includes Code from External Repos:
+- labelbox-export
+- -PyTorch U-Net https://github.com/milesial/Pytorch-UNet
