@@ -36,3 +36,6 @@ This repository contains the code and data for my Master's thesis project titled
 - `requirements.txt`: Python dependencies for running the project.
 
 
+### used
+- labebox-export
+- -PyTorch U-Net

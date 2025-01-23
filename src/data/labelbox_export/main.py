@@ -360,7 +360,7 @@ def main(api_key, project_id, output_directory):
     project = client.get_project(project_id)
 
     # Recreate the directory '<output_directory>/output' to avoid confusion with the output of previous runs
-    output_directory = os.path.join(output_directory, "output")
+    output_directory = os.path.join(output_directory, "labelbox_output")
     if os.path.exists(output_directory):
         shutil.rmtree(output_directory)
     # Create the directories 'frames', 'masks' and 'landmarks' as subdirectories of '<output_directory>/output'
@@ -385,7 +385,7 @@ def main(api_key, project_id, output_directory):
     print("Extracting the area feature masks from the exported labels.\n")
     save_masks(labels, os.path.join(output_directory, "masks"), client)
 
-    print("Finished exporting the labels. The output can be found in './output'.\n")
+    print("Finished exporting the labels. The output can be found in './labelbox_output_mbs_0119'.\n")
 
 
 # The following code block is only executed if this script is being run directly and not imported

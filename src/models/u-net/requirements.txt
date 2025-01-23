@@ -1,0 +1,9 @@
+matplotlib==3.6.2
+numpy==1.23.5
+Pillow==9.3.0
+tqdm==4.64.1
+wandb==0.13.5
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --upgrade --force-reinstall
+
+use python 3.11
+pip install setuptools matplotlib==3.6.2 numpy==1.23.5 Pillow==9.3.0 tqdm==4.64.1 wandb==0.13.5 torchviz
