@@ -1,28 +1,24 @@
 import argparse
 import logging
 import os
-import re
-from pathlib import Path
-import glob
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
 
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for saving figures
+import matplotlib.pyplot as plt
+
 from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
-
+from tqdm import tqdm
 
 def find_runs_dir(run_name=None, runs_root='runs'):
-    """
-    Finds a run directory under 'runs/' either by:
-      - run_name (exact subdir match), or
-      - the most recently modified run if run_name is None.
-    Returns the Path to that run directory, or None if none found.
-    """
     runs_root = Path(runs_root)
 
     if run_name:
@@ -31,13 +27,13 @@ def find_runs_dir(run_name=None, runs_root='runs'):
         if candidate.is_dir():
             return candidate
         else:
-            logging.warning(f"Could not find run directory {candidate}, returning None.")
+            logging.warning(f"[find_runs_dir] Could not find run directory {candidate}, returning None.")
             return None
     else:
         # Pick the newest directory that starts with 'run-'
         run_dirs = [d for d in runs_root.iterdir() if d.is_dir() and d.name.startswith('run-')]
         if not run_dirs:
-            logging.warning(f"No run directories found in {runs_root}")
+            logging.warning(f"[find_runs_dir] No run directories found in {runs_root}")
             return None
 
         # Sort by modification time descending
@@ -62,28 +58,22 @@ def predict_img(net,
 
     # Convert image to np.float32
     img_np = np.array(full_img, dtype=np.float32)
-    print("hey")
-    print(img_np.shape)  # HxWxC
+
     # Preprocess using the BasicDataset method => shape (C, scaledH, scaledW)
     img_np = BasicDataset.preprocess(img_np, scale_factor, is_mask=False)
+
+    # Adjust shape depending on channel count
     if net.n_channels == 1 and img_np.ndim == 2:
         img_np = np.expand_dims(img_np, axis=0)
-
     elif net.n_channels == 3 and img_np.ndim == 3:
-        # If your preprocess yields shape (H, W, 3), you might need to transpose to (3, H, W).
         img_np = np.transpose(img_np, (2, 0, 1))
 
-    # Now img_np is (C, H, W). Next we unsqueeze batch => (1, C, H, W)
+    # Now img_np is (C, H, W). Next we unsqueeze for batch => (1, C, H, W)
     img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device, dtype=torch.float32)
-    print(img_torch.shape)  # should be [1, 1, H, W] or [1, 3, H, W]
 
-
-    # Move to torch tensor => shape (1, C, scaledH, scaledW)
-    img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device=device, dtype=torch.float32)
-    #img dims
-    print(img_torch.shape)
     with torch.no_grad():
         output = net(img_torch).cpu()
+
         # Resize the output back to the original image shape (H, W)
         orig_size = (full_img.size[1], full_img.size[0])  # (height, width)
         output = F.interpolate(output, size=orig_size, mode='bilinear', align_corners=False)
@@ -95,8 +85,9 @@ def predict_img(net,
             # binary => sigmoid + threshold
             mask = (torch.sigmoid(output) > out_threshold)  # [1, 1, H, W]
 
-    # Return [H, W] or [1, H, W] -> but typically we want a 2D np.array
-    return mask[0].long().squeeze().numpy()
+    # Return a 2D np.array: shape [H, W]
+    mask_np = mask[0].long().squeeze().numpy()
+    return mask_np
 
 
 def mask_to_image(mask: np.ndarray, mask_values):
@@ -105,9 +96,8 @@ def mask_to_image(mask: np.ndarray, mask_values):
     For example, if mask_values=[0,255], we map 0->0, 1->255 for binary.
     If multi-class with e.g. mask_values=[0,127,255], we map class 0->0, class 1->127, class 2->255, etc.
     """
-    # mask shape is (H, W)
     if len(mask_values) == 2 and set(mask_values) == {0, 1}:
-        # interpret as boolean
+        # interpret as boolean => map 0->0, 1->255
         out = np.zeros(mask.shape, dtype=np.uint8)
         out[mask == 1] = 255
         return Image.fromarray(out)
@@ -119,6 +109,83 @@ def mask_to_image(mask: np.ndarray, mask_values):
     return Image.fromarray(out)
 
 
+def overlay_prediction_on_image(img_pil: Image.Image,
+                                mask: np.ndarray,
+                                color=(255, 0, 255),
+                                alpha=0.3):
+    """
+    Create a visualization by overlaying the binary or multi-class mask on the original image in a single color.
+    Now with alpha=0.3 for more transparency.
+    """
+    if img_pil.mode != 'RGB':
+        img_pil = img_pil.convert('RGB')
+
+    img_np = np.array(img_pil)
+    overlay = np.zeros_like(img_np)
+    overlay[mask != 0] = color
+
+    result = (alpha * overlay + (1 - alpha) * img_np).astype(np.uint8)
+    return Image.fromarray(result)
+
+
+def overlay_pred_and_gt_on_image(img_pil: Image.Image,
+                                 pred_mask: np.ndarray,
+                                 gt_mask: np.ndarray,
+                                 pred_color=(255, 0, 255),  # Purple
+                                 gt_color=(0, 255, 0),     # Green
+                                 alpha=0.3):
+    """
+    Overlay predicted mask in one color, and ground truth in another color, on the original image.
+    """
+    if img_pil.mode != 'RGB':
+        img_pil = img_pil.convert('RGB')
+
+    base_np = np.array(img_pil)
+
+    pred_overlay = np.zeros_like(base_np)
+    pred_overlay[pred_mask != 0] = pred_color
+
+    gt_overlay = np.zeros_like(base_np)
+    gt_overlay[gt_mask != 0] = gt_color
+
+    combined_overlay = pred_overlay + gt_overlay
+    result = (alpha * combined_overlay + (1 - alpha) * base_np).astype(np.uint8)
+    return Image.fromarray(result)
+
+
+def create_triplet_plot(original_img,
+                        overlay_gt_img,
+                        overlay_pred_img,
+                        save_path):
+    """
+    Creates a single figure with three subplots:
+      - Left: Original image
+      - Middle: Original image with ground truth overlay
+      - Right: Original image with prediction overlay
+    Saves to save_path.
+    """
+    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+
+    # Show the original image
+    axs[0].imshow(original_img)
+    axs[0].set_title("Original")
+    axs[0].axis('off')
+
+    # Show the ground truth overlay
+    axs[1].imshow(overlay_gt_img)
+    axs[1].set_title("Ground Truth Overlay")
+    axs[1].axis('off')
+
+    # Show the prediction overlay
+    axs[2].imshow(overlay_pred_img)
+    axs[2].set_title("Prediction Overlay")
+    axs[2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close(fig)
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
     parser.add_argument('--run-name', type=str, default=None,
@@ -127,105 +194,140 @@ def get_args():
                         help='Parent directory containing run subdirs, default="runs"')
     parser.add_argument('--model-file', type=str, default='model.pth',
                         help='Name of the model file in the run directory, default="model.pth"')
-
     parser.add_argument('--input', '-i', metavar='INPUT', nargs='+',
-                        help='Filenames of input images. Default is all images in ./data/test',
+                        help='Filenames of input images. Default is all images in ./data/test/imgs',
                         default=None)
     parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+',
                         help='Filenames of output images. If not given, automatically generated')
-
     parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
     parser.add_argument('--viz', '-v', action='store_true',
                         help='Visualize the images as they are processed')
-
     parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
-                        help='Minimum probability value to consider a mask pixel white (for binary)')
+                        help='Minimum probability to consider a mask pixel white (for binary)')
     parser.add_argument('--scale', '-s', type=float, default=1.0,
-                        help='Scale factor for the input images. (If you trained with 0.5, you can do the same here.)')
+                        help='Scale factor for the input images.')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes (1 for binary, else >1)')
     parser.add_argument('--channels', type=int, default=1, help='Number of input channels (default=1 for grayscale)')
-
+    parser.add_argument('--test-dir', type=str,
+                        default='../../../data/processed/dataset_first_experiments/test/imgs',
+                        help='Path to the folder containing test images (default to your dataset path).')
+    parser.add_argument('--gt-dir', type=str,
+                        default='../../../data/processed/dataset_first_experiments/test/masks',
+                        help='Path to the folder containing ground truth masks (for optional visualization).')
     return parser.parse_args()
 
 
-def get_output_filenames(args, in_files):
-    """
-    If user gave --output, we use it directly.
-    Otherwise, for each input file we create something like "output/raw/<stem>_OUT.png".
-    """
+def get_output_filenames(args, in_files, raw_output_dir):
     if args.output is not None:
-        # If user specified output paths => use them
         return args.output
     else:
-        # By default, store in "output/raw/<stem>_OUT.png"
-        out_dir = Path('output') / 'raw'
-        out_dir.mkdir(parents=True, exist_ok=True)
         out_files = []
         for fn in in_files:
             stem = Path(fn).stem
-            out_files.append(str(out_dir / f"{stem}_OUT.png"))
+            out_files.append(str(Path(raw_output_dir) / f"{stem}_OUT.png"))
         return out_files
 
 
-def find_test_images(test_dir='data/test'):
-    """
-    If user doesn't specify input images, we default to all images in ./data/test
-    that have typical image suffixes.
-    """
+def find_test_images(test_dir):
     test_dir_path = Path(test_dir)
     valid_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff')
     files = []
     for ext in valid_exts:
         files.extend(test_dir_path.glob(f'*{ext}'))
-    # Convert to string sorted list
     files = sorted(str(f) for f in files)
     return files
+
+
+def get_gt_filename(img_filename, gt_dir, suffix='_bolus'):
+    """
+    If your test image is named "0.png", the GT is "0_bolus.png" in the same folder (gt_dir).
+    """
+    image_path = Path(img_filename)
+    stem = image_path.stem  # e.g. "0"
+    extension = image_path.suffix  # e.g. ".png"
+
+    # Build the ground truth file name with the suffix
+    candidate = Path(gt_dir) / f"{stem}{suffix}{extension}"
+    if candidate.is_file():
+        return str(candidate)
+    else:
+        return None
 
 
 def main():
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-    # 1. Determine the run directory
+    # 1. Determine the run directory (from which we load the model)
     run_dir = find_runs_dir(run_name=args.run_name, runs_root=args.runs_root)
     if run_dir is None:
-        raise FileNotFoundError("No valid run directory found. Either specify --run-name or ensure runs/ is not empty.")
+        raise FileNotFoundError("[main] No valid run directory found. "
+                                "Either specify --run-name or ensure runs/ is not empty.")
 
     # 2. Construct path to the model file
     model_path = run_dir / "checkpoints" / args.model_file
     if not model_path.is_file():
-        raise FileNotFoundError(f"Model file {model_path} does not exist!")
+        raise FileNotFoundError(f"[main] Model file {model_path} does not exist!")
 
     # 3. Collect input images
     if args.input is None:
-        # By default, predict on data/test/ images
-        in_files = find_test_images('data/test/imgs')
+        # By default, predict on images found in args.test_dir
+        in_files = find_test_images(args.test_dir)
         if not in_files:
-            raise FileNotFoundError("No test images found in ./data/test.")
+            raise FileNotFoundError(f"[main] No test images found in {args.test_dir}.")
     else:
         in_files = args.input
 
-    # 4. Create output filenames
-    out_files = get_output_filenames(args, in_files)
+    # 4. Create a timestamped output folder
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    run_output_dir = Path('output') / timestamp
+    run_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 5. Build the UNet with desired channels/classes
+    # 4a. Create subfolders
+    raw_output_dir = run_output_dir / 'raw'
+    raw_output_dir.mkdir(parents=True, exist_ok=True)
+
+    viz_pred_dir = run_output_dir / 'viz_pred'
+    viz_pred_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[main] Created subfolder for predicted overlays: {viz_pred_dir}")
+
+    viz_pred_gt_dir = run_output_dir / 'viz_pred_gt'
+    viz_pred_gt_dir.mkdir(parents=True, exist_ok=True)
+
+    triple_plot_dir = run_output_dir / 'triple_plot'
+    triple_plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4b. Write a small text file with info about the model & data
+    info_file = run_output_dir / "run_info.txt"
+    with open(info_file, 'w') as f:
+        f.write(f"Model used: {model_path}\n")
+        f.write(f"Test images path: {args.test_dir}\n")
+        f.write(f"Ground truth path (if used): {args.gt_dir}\n")
+        f.write(f"Date/Time: {timestamp}\n")
+    print(f"[main] Wrote run information to: {info_file}")
+
+    # 5. Build the UNet
+    print("[main] Building UNet...")
     net = UNet(n_channels=args.channels, n_classes=args.classes, bilinear=args.bilinear)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f'Loading model from {model_path}')
-    logging.info(f'Using device: {device}')
+    print(f"[main] Using device: {device}")
 
+    # Load the model weights
     net.to(device=device)
     state_dict = torch.load(model_path, map_location=device)
 
     # Extract mask_values if stored
     mask_values = state_dict.pop('mask_values', [0, 1])
-    net.load_state_dict(state_dict)
-    logging.info('Model loaded!')
 
-    # 6. Predict each file
-    for i, filename in enumerate(in_files):
-        logging.info(f'Predicting image: {filename}')
+    net.load_state_dict(state_dict)
+    print("[main] Model loaded successfully!")
+
+    # 6. Determine output filenames
+    out_files = get_output_filenames(args, in_files, raw_output_dir)
+
+    # 7. Predict each file
+    for i, filename in tqdm(enumerate(in_files)):
         img = Image.open(filename)
 
         mask = predict_img(net=net,
@@ -234,18 +336,60 @@ def main():
                            out_threshold=args.mask_threshold,
                            device=device)
 
-        # 7. Save result if desired
+        # 8. Save result if desired
         if not args.no_save:
             out_filename = out_files[i]
-            # Convert mask to actual image
             result_img = mask_to_image(mask, mask_values)
             result_img.save(out_filename)
-            logging.info(f"Mask saved to: {out_filename}")
 
-        if args.viz:
-            from utils.utils import plot_img_and_mask
-            logging.info(f'Visualizing results for image {filename}, close the figure to continue...')
-            plot_img_and_mask(img, mask)
+        # 9. Make and save a visualization with predicted mask in purple (alpha=0.3)
+        overlay_img_pred = overlay_prediction_on_image(
+            img_pil=img,
+            mask=mask,
+            color=(255, 0, 255),
+            alpha=0.3
+        )
+        overlay_filename = viz_pred_dir / f"{Path(filename).stem}_overlay_pred.png"
+        overlay_img_pred.save(overlay_filename)
+
+        # 10. Make and save a visualization with pred + ground truth, if GT is available
+        gt_path = get_gt_filename(filename, args.gt_dir, suffix='_bolus')
+        if gt_path and Path(gt_path).is_file():
+            gt_img_pil = Image.open(gt_path)
+            gt_arr = np.array(gt_img_pil, dtype=np.uint8)
+
+            # If GT is RGB, reduce to single channel or adapt for multi-class
+            if gt_arr.ndim == 3:
+                gt_arr = gt_arr[:, :, 0]  # simplistic approach for demonstration
+
+            overlay_img_gt = overlay_pred_and_gt_on_image(
+                img_pil=img,
+                pred_mask=mask,
+                gt_mask=gt_arr,
+                pred_color=(255, 0, 255),  # Purple
+                gt_color=(0, 255, 0),     # Green
+                alpha=0.3
+            )
+            overlay_pred_gt_filename = viz_pred_gt_dir / f"{Path(filename).stem}_overlay_pred_gt.png"
+            overlay_img_gt.save(overlay_pred_gt_filename)
+
+            # 11. Create a triple plot: left=original, middle=original+GT, right=original+Pred
+            # We'll re-use the same overlays or generate them individually
+            # For the middle, let's overlay just the GT (without pred).
+            overlay_gt_only = overlay_prediction_on_image(
+                img_pil=img,
+                mask=gt_arr,
+                color=(0, 255, 0),
+                alpha=0.3
+            )
+            # For the right, we already have overlay_img_pred
+
+            triple_plot_path = triple_plot_dir / f"{Path(filename).stem}_triple.png"
+            create_triplet_plot(img, overlay_gt_only, overlay_img_pred, triple_plot_path)
+
+
+    print("[main] All predictions complete!")
+
 
 if __name__ == '__main__':
     main()
