@@ -20,3 +20,11 @@ Each dataset as its own directory since each dataset has its own structure and h
    - swallows are (>50%) extracted from full recordings
    - 
 
+
+Pipeline:
+- get raw data
+- run create data from labelexports, from leonard
+- in processed folder:
+- mask sanitize data
+- resize images if needed
+- create train test split

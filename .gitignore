@@ -2,9 +2,12 @@
 # data folder
 data/processed/*
 data/raw/*
+data/foreback/*
 
+#output stuff
+src/models/u_net/output/*
 #wandb
-src/models/u-net/wandb/*
+src/models/u_net/wandb/*
 
 # model files
 *.pth
