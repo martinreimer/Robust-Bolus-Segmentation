@@ -41,53 +41,33 @@ def find_runs_dir(run_name=None, runs_root='runs'):
         return run_dirs[0]  # newest
 
 
-def predict_img(net,
-                full_img: Image.Image,
-                device: torch.device,
-                scale_factor=1.0,
-                out_threshold=0.5):
-    """Predict mask for a single image `full_img` using a trained `net`."""
+def predict_img(net, full_img: Image.Image, device: torch.device, scale_factor=1.0, thresholds=[0.5]):
+    """Predict masks for a single image using different thresholds."""
     net.eval()
 
-    if net.n_channels == 1:
-        # convert to grayscale
-        full_img = full_img.convert('L')
-    else:
-        # assume 3 channels => convert to RGB
-        full_img = full_img.convert('RGB')
-
-    # Convert image to np.float32
+    full_img = full_img.convert('L') if net.n_channels == 1 else full_img.convert('RGB')
     img_np = np.array(full_img, dtype=np.float32)
+    img_np = BasicDataset.preprocess(img_np, is_mask=False)
 
-    # Preprocess using the BasicDataset method => shape (C, scaledH, scaledW)
-    img_np = BasicDataset.preprocess(img_np, scale_factor, is_mask=False)
-
-    # Adjust shape depending on channel count
     if net.n_channels == 1 and img_np.ndim == 2:
         img_np = np.expand_dims(img_np, axis=0)
     elif net.n_channels == 3 and img_np.ndim == 3:
         img_np = np.transpose(img_np, (2, 0, 1))
 
-    # Now img_np is (C, H, W). Next we unsqueeze for batch => (1, C, H, W)
     img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device, dtype=torch.float32)
 
     with torch.no_grad():
         output = net(img_torch).cpu()
-
-        # Resize the output back to the original image shape (H, W)
-        orig_size = (full_img.size[1], full_img.size[0])  # (height, width)
+        orig_size = (full_img.size[1], full_img.size[0])
         output = F.interpolate(output, size=orig_size, mode='bilinear', align_corners=False)
 
-        if net.n_classes > 1:
-            # multi-class => argmax
-            mask = output.argmax(dim=1)  # [1, H, W]
-        else:
-            # binary => sigmoid + threshold
-            mask = (torch.sigmoid(output) > out_threshold)  # [1, 1, H, W]
+        # Process each threshold separately
+        masks = {}
+        for threshold in thresholds:
+            masks[threshold] = (torch.sigmoid(output) > threshold).long().squeeze().numpy()
 
-    # Return a 2D np.array: shape [H, W]
-    mask_np = mask[0].long().squeeze().numpy()
-    return mask_np
+    return masks  # Dictionary {threshold: mask_array}
+
 
 
 def mask_to_image(mask: np.ndarray, mask_values):
@@ -202,8 +182,6 @@ def get_args():
     parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
     parser.add_argument('--viz', '-v', action='store_true',
                         help='Visualize the images as they are processed')
-    parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
-                        help='Minimum probability to consider a mask pixel white (for binary)')
     parser.add_argument('--scale', '-s', type=float, default=1.0,
                         help='Scale factor for the input images.')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
@@ -215,6 +193,9 @@ def get_args():
     parser.add_argument('--gt-dir', type=str,
                         default='../../../data/processed/dataset_first_experiments/test/masks',
                         help='Path to the folder containing ground truth masks (for optional visualization).')
+    parser.add_argument('--mask-thresholds', '-t', type=float, nargs='+', default=[0.5],
+                        help='List of probability thresholds to apply (e.g., 0.3 0.5 0.7).')
+
     return parser.parse_args()
 
 
@@ -326,70 +307,79 @@ def main():
     # 6. Determine output filenames
     out_files = get_output_filenames(args, in_files, raw_output_dir)
 
-    # 7. Predict each file
+    # Step 7: Predict each test file
     for i, filename in tqdm(enumerate(in_files)):
         img = Image.open(filename)
+        masks = predict_img(net, img, device=device, thresholds=args.mask_thresholds)
 
-        mask = predict_img(net=net,
-                           full_img=img,
-                           scale_factor=args.scale,
-                           out_threshold=args.mask_threshold,
-                           device=device)
+        for threshold, mask in masks.items():
+            threshold_str = f"{int(threshold * 100)}"
 
-        # 8. Save result if desired
-        if not args.no_save:
-            out_filename = out_files[i]
-            result_img = mask_to_image(mask, mask_values)
-            result_img.save(out_filename)
+            # Save mask
+            if not args.no_save:
+                mask_filename = raw_output_dir / f"{Path(filename).stem}_mask_{threshold_str}.png"
+                mask_to_image(mask, mask_values).save(mask_filename)
 
-        # 9. Make and save a visualization with predicted mask in purple (alpha=0.3)
-        overlay_img_pred = overlay_prediction_on_image(
-            img_pil=img,
-            mask=mask,
-            color=(255, 0, 255),
-            alpha=0.3
-        )
-        overlay_filename = viz_pred_dir / f"{Path(filename).stem}_overlay_pred.png"
-        overlay_img_pred.save(overlay_filename)
-
-        # 10. Make and save a visualization with pred + ground truth, if GT is available
-        gt_path = get_gt_filename(filename, args.gt_dir, suffix='_bolus')
-        if gt_path and Path(gt_path).is_file():
-            gt_img_pil = Image.open(gt_path)
-            gt_arr = np.array(gt_img_pil, dtype=np.uint8)
-
-            # If GT is RGB, reduce to single channel or adapt for multi-class
-            if gt_arr.ndim == 3:
-                gt_arr = gt_arr[:, :, 0]  # simplistic approach for demonstration
-
-            overlay_img_gt = overlay_pred_and_gt_on_image(
-                img_pil=img,
-                pred_mask=mask,
-                gt_mask=gt_arr,
-                pred_color=(255, 0, 255),  # Purple
-                gt_color=(0, 255, 0),     # Green
-                alpha=0.3
+            # Predicted overlay
+            overlay_img_pred = overlay_prediction_on_image(
+                img_pil=img, mask=mask, color=(255, 0, 255), alpha=0.3
             )
-            overlay_pred_gt_filename = viz_pred_gt_dir / f"{Path(filename).stem}_overlay_pred_gt.png"
-            overlay_img_gt.save(overlay_pred_gt_filename)
+            overlay_pred_filename = viz_pred_dir / f"{Path(filename).stem}_overlay_pred_{threshold_str}.png"
+            overlay_img_pred.save(overlay_pred_filename)
 
-            # 11. Create a triple plot: left=original, middle=original+GT, right=original+Pred
-            # We'll re-use the same overlays or generate them individually
-            # For the middle, let's overlay just the GT (without pred).
-            overlay_gt_only = overlay_prediction_on_image(
-                img_pil=img,
-                mask=gt_arr,
-                color=(0, 255, 0),
-                alpha=0.3
-            )
-            # For the right, we already have overlay_img_pred
+            # Overlay with ground truth (if available)
+            gt_path = get_gt_filename(filename, args.gt_dir, suffix='_bolus')
+            if gt_path and Path(gt_path).is_file():
+                gt_img_pil = Image.open(gt_path)
+                gt_arr = np.array(gt_img_pil, dtype=np.uint8)
+                if gt_arr.ndim == 3:
+                    gt_arr = gt_arr[:, :, 0]
 
-            triple_plot_path = triple_plot_dir / f"{Path(filename).stem}_triple.png"
-            create_triplet_plot(img, overlay_gt_only, overlay_img_pred, triple_plot_path)
+                overlay_gt_only = overlay_prediction_on_image(img_pil=img, mask=gt_arr, color=(0, 255, 0), alpha=0.3)
 
+                threshold_overlays = {threshold: overlay_prediction_on_image(
+                    img_pil=img, mask=mask, color=(255, 0, 255), alpha=0.3) for threshold, mask in masks.items()}
+
+                threshold_comparison_plot_path = triple_plot_dir / f"{Path(filename).stem}_thresholds.png"
+                create_threshold_comparison_plot(img, overlay_gt_only, threshold_overlays,
+                                                 threshold_comparison_plot_path)
 
     print("[main] All predictions complete!")
+
+def create_threshold_comparison_plot(original_img, overlay_gt_img, overlay_pred_dict, save_path):
+    """
+    Create a figure showing:
+      - Left: Original image
+      - Middle: Original image with ground truth overlay
+      - Right columns: Predictions for multiple thresholds
+    """
+    num_thresholds = len(overlay_pred_dict)
+    fig, axs = plt.subplots(1, num_thresholds + 2, figsize=(4 * (num_thresholds + 2), 4))
+
+    axs[0].imshow(original_img)
+    axs[0].set_title("Original")
+    axs[0].axis('off')
+
+    axs[1].imshow(overlay_gt_img)
+    axs[1].set_title("Ground Truth")
+    axs[1].axis('off')
+
+    for i, (threshold, overlay_pred_img) in enumerate(overlay_pred_dict.items()):
+        axs[i + 2].imshow(overlay_pred_img)
+        axs[i + 2].set_title(f"Prediction (th={threshold})")
+        axs[i + 2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close(fig)
 
 
 if __name__ == '__main__':
     main()
+
+'''
+
+Foreback:
+python .\predict.py --run-name run-20250202_084952 --model-file checkpoint_epoch3.pth --test-dir D:/Martin/data/foreback/processed/test/imgs   
+
+'''

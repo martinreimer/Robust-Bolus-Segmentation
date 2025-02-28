@@ -2,7 +2,7 @@
 create_unified_dataset.py
 
 This script reads data from multiple source folders (each containing a data_overview.csv),
-copies/resizes images and masks into a single 'unified' dataset folder with subfolders
+copies images and masks into a single 'unified' dataset folder with subfolders
 "imgs" and "masks". It outputs a single 'data_overview.csv' that references all images.
 It does NOT perform any train/test splitting.
 """
@@ -11,46 +11,24 @@ import os
 import shutil
 import pandas as pd
 from PIL import Image
-import numpy as np
+import argparse
 from tqdm import tqdm
 
-# 3rd-party for resizing
-# from PIL import Image
-# e.g. pip install pillow
-
-# -----------------------
-# --- USER PARAMETERS ---
-# -----------------------
-DATA_EXPORT_PATH_1 = "../../data/raw/labelbox_output_mbs_0123"
-DATA_EXPORT_PATH_2 = "../../data/raw/labelbox_output_mbss_martin_0123"
-DATA_FOLDERS = [DATA_EXPORT_PATH_1, DATA_EXPORT_PATH_2]
-
-UNIFIED_DATASET_PATH = "../../data/processed/dataset_labelbox_export_0124"
-
-# Define target image resolution (width x height)
-TARGET_RESOLUTION = "256x256"  # e.g. "512x512"
-
-# --------------------
-# --- MAIN LOGIC  ---
-# --------------------
-
-def resize_image(img_path, target_width, target_height, save_path, is_mask=False):
-    """
-    Resizes an image to target_width x target_height and saves it to save_path.
-    Uses nearest-neighbor for masks, LANCZOS (or similar) for regular images.
-    """
-    try:
-        img = Image.open(img_path)
-        if is_mask:
-            img = img.resize((target_width, target_height), Image.NEAREST)
-        else:
-            img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        img.save(save_path)
-    except (FileNotFoundError, OSError):
-        print(f"[resize_image] Error resizing image: {img_path}")
-
+def parse_args():
+    parser = argparse.ArgumentParser(description="Create a unified dataset from multiple sources.")
+    parser.add_argument("--input_paths", nargs='+', default=[
+        "../../data/raw/labelbox_output_mbs_0123",
+        "../../data/raw/labelbox_output_mbss_martin_0123"
+    ], help="List of input dataset paths")
+    parser.add_argument("--output_path", default="../../data/processed/dataset_labelbox_export_0124",
+                        help="Path to output dataset folder")
+    return parser.parse_args()
 
 def main():
+    args = parse_args()
+    DATA_FOLDERS = args.input_paths
+    UNIFIED_DATASET_PATH = args.output_path
+
     # 1. Create the unified dataset structure (imgs/ and masks/)
     os.makedirs(UNIFIED_DATASET_PATH, exist_ok=True)
     imgs_dir = os.path.join(UNIFIED_DATASET_PATH, "imgs")
@@ -71,7 +49,6 @@ def main():
 
     # 3. Start copying from source folders
     new_id = 0
-    target_w, target_h = map(int, TARGET_RESOLUTION.split('x'))
 
     for data_folder in DATA_FOLDERS:
         print(f"\n[main] Processing data from {data_folder} ...")
@@ -87,7 +64,7 @@ def main():
             old_frame_name = f"{old_frame_idx}.png"
             old_mask_name = f"{old_frame_idx}_bolus.png"
 
-            old_img_path = os.path.join(data_folder, "frames", old_frame_name)
+            old_img_path = os.path.join(data_folder, "imgs", old_frame_name)
             old_mask_path = os.path.join(data_folder, "masks", old_mask_name)
 
             # Construct new filenames
@@ -101,8 +78,9 @@ def main():
             if os.path.exists(old_mask_path):
                 shutil.copy(old_mask_path, new_msk_path)
             else:
-                # create a black mask
-                blank_mask = Image.new("L", (target_w, target_h), color=0)
+                img = Image.open(new_img_path)
+                w, h = img.size
+                blank_mask = Image.new("L", (w, h), color=0)
                 blank_mask.save(new_msk_path)
 
             # Attempt to get original resolution
@@ -112,10 +90,6 @@ def main():
                 original_res = f"{w}x{h}"
             except:
                 original_res = "Resolution_Error"
-
-            # Resize the images in-place
-            resize_image(new_img_path, target_w, target_h, new_img_path, is_mask=False)
-            resize_image(new_msk_path, target_w, target_h, new_msk_path, is_mask=True)
 
             # Add new row to our master overview
             new_row = {
@@ -142,6 +116,6 @@ def main():
 
     print("\n[main] Done creating unified dataset!")
 
-
 if __name__ == "__main__":
     main()
+#python create_unified_dataset.py --input_paths path1 path2 path3 --output_path path/to/output

@@ -1,4 +1,17 @@
 # Labelbox Export
+
+Quick Infos:
+- MBSS_Martin Project ID: cm5qm2z0c0b8b07zgdc5f52jp
+
+- MBS Project ID: cl2t3p57f1b5y0764dutw9c2t
+
+Run command
+`python main.py -pi cl2t3p57f1b5y0764dutw9c2t -o D:\Martin\thesis\data\raw\labelbox_output_mbs_0226`
+
+`python main.py -pi cm5qm2z0c0b8b07zgdc5f52jp -o D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0226`
+
+
+
 This repository contains a Python script for exporting annotated swallowing videos from a Labelbox Project. The script extracts the individual frames from the videos and saves the landmark points and the area feature masks for each frame.
 
 ## Table of Contents

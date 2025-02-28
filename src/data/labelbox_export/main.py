@@ -1,6 +1,12 @@
 """
 This file contains a script to export labels from a Labelbox project and to extract the single video frames,
 landmark points, and area feature masks from the exported labels.
+
+Changes:
+    - If no mask is found for a frame, we create an all-black mask for that frame.
+    - If a bolus mask is corrupt or cannot be fetched or cannot be merged, we write an all-white image (will be removed later)
+    - We now read the API key from a file named 'apikey.txt' in the same directory as this script.
+    - We now suppress deprecation warnings
 """
 
 import labelbox as lb
@@ -12,11 +18,16 @@ import requests
 from io import BytesIO
 import numpy as np
 import tempfile
-import tempfile
 import requests
 import argparse
 from typing import List, Dict
 import csv
+from tqdm import tqdm
+
+# surpress deprecation warnings
+import warnings
+warnings.filterwarnings("ignore")
+
 
 
 def export_labels(project, output_directory):
@@ -72,275 +83,193 @@ def export_labels(project, output_directory):
 
     return labels
 
-
-def get_annotation_categories(labels):
+def export_frames_and_bolus_masks_skip_on_error(
+    labels,
+    frames_output_dir,
+    masks_output_dir,
+    client,
+    csv_path,
+    start_index=0,
+    end_index=None
+):
     """
-    Creates a list of unique annotation categories used in the provided Labelbox labels.
+    For each labeled video in `labels`:
+      - Download the video via its URL (WITHOUT passing client.headers, to avoid 401).
+      - Read ALL frames using OpenCV.
+      - For each frame:
+         1) Lookup Bolus annotations for that local frame index (if any).
+         2) Attempt to fetch/merge Bolus masks.
+             -> If ANY error, skip this frame (no frame .png, no mask .png).
+         3) If no bolus is annotated, produce an all-black mask.
+         4) If everything is fine, save the frame & mask with a consistent global_frame_idx.
+      - We record each SUCCESSFUL frame in `data_overview.csv`.
 
-    Parameters:
-    - labels (list): list of Labelbox labels (return value of the function 'export_labels')
+    We'll print a summary at the end with total frames read, total frames saved,
+    total frames skipped. The resulting CSV has 3 columns:
+    [frame_idx, video_name, local_frame_idx].
 
-    Returns:
-    - list: list of unique annotation categories used in 'labels'
+    Args:
+        labels (List[Dict]): The exported Labelbox data
+        frames_output_dir (str): Where to save frames
+        masks_output_dir (str): Where to save masks
+        client: Labelbox client for authenticated requests to mask URLs
+        csv_path (str): Where to write the final data_overview.csv
+        start_index (int), end_index (int): subset of labels to process
     """
 
-    # Create an empty set to store unique category names
-    unique_categories = set()
-
-    # Iterate through the data to find the category names
-    for dr in labels:
-        for project_id, project_data in dr["projects"].items():
-            for label in project_data["labels"]:
-                for frame_data in label["annotations"]["frames"].values():
-                    for feature in frame_data["objects"].values():
-                        unique_categories.add(feature["name"])
-
-    # Convert the set to a list for easier access
-    unique_categories_list = list(unique_categories)
-
-    return unique_categories_list
-
-
-def export_video_frames(labels, output_directory, start_index=0, end_index=None) -> None:
-    """
-    Exports the single video frames from the provided Labelbox labels as .png images and
-    creates 'data_overview.csv' as overview of the exported frames.
-
-    Parameters:
-    - labels (list): list of Labelbox labels (return value of the function 'export_labels')
-    - output_directory (str): directory where the exported frames and the .csv file are saved
-    - start_index: index at which to start processing the list of Labelbox labels (default: 0)
-    - end_index: index at which to stop processing the list of Labelbox labels (default: len('labels')))
-    """
-    # Header for the .csv file
-    csv_header = ["frame_idx", "video_name", "frame"]
-    # List to store the data for the .csv file
-    data_overview = []
-    # Counter for the total number of exported frames
-    global_frame_idx = 0
-
-    # Set end_index to the length of the label list if no other value is provided
     if end_index is None:
         end_index = len(labels)
 
-    # Iterate over the data
-    for dr in labels[start_index:end_index]:
-        data = dr["data_row"]
-        video_name = data["external_id"]
-        video_url = data["row_data"]
+    # Prepare for CSV logging
+    data_overview = []
+    csv_header = ["frame_idx", "video_name", "frame"]
 
-        # Download the video belonging to the current label and store it in a temporary file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            response = requests.get(video_url)
-            response.raise_for_status()
-            temp_file.write(response.content)
+    # Some counters for summary
+    total_videos = 0
+    total_frames_read = 0
+    saved_frames_count = 0
+    skipped_frames_count = 0
 
-            # Open the temporary video file
-            video_capture = cv2.VideoCapture(temp_file.name)
+    global_frame_idx = 0
 
-            # Counter for the number of frames exported from the current video
-            frame_idx = 0
-            while True:
-                # Read the next frame from the video
-                success, frame = video_capture.read()
-                # Exit the loops if no more frames are available
-                if not success:
-                    break
+    print(f"Starting to process {end_index - start_index} labeled videos ...")
 
-                # Save the current frame as '<global_frame_idx>.png'
-                image_filename = f"{global_frame_idx}.png"
-                image_path = os.path.join(output_directory, image_filename)
-                cv2.imwrite(image_path, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    for idx, dr in tqdm(enumerate(labels[start_index:end_index], start=start_index), total=end_index-start_index):
+        video_name = dr["data_row"]["external_id"]
+        video_url  = dr["data_row"]["row_data"]
 
-                # Append the global frame index, the name of the current video and the index
-                # of the frame with regard to the current video to 'data_overview'
-                data_overview.append(
-                    {"frame_idx": global_frame_idx, "video_name": video_name, "frame": frame_idx}
-                )
+        # Collect label/annotation info for each frame from Labelbox
+        all_frames_annotations = {}
+        for project_id, project_data in dr["projects"].items():
+            lb_label = project_data["labels"][0]
+            frames_dict = lb_label["annotations"]["frames"]
+            for frame_str, frame_data in frames_dict.items():
+                all_frames_annotations[int(frame_str)] = frame_data
 
-                frame_idx += 1
-                global_frame_idx += 1
+        # Download the video (NO client.headers => avoid 401)
+        try:
+            resp = requests.get(video_url)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            print(f"ERROR: Could not download video for {video_name}. HTTPError: {e}")
+            continue  # skip entire video
 
-        # Explicitly release the video capture object
-        video_capture.release()
+        # Write video to a temp file for OpenCV
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(resp.content)
+            tmp_name = tmp.name
 
-        # Write the information stored in 'data_overview' to 'data_overview.csv'
-        with open(
-                f"{output_directory}/../data_overview.csv", mode="w", newline=""
-        ) as file:
-            writer = csv.DictWriter(file, fieldnames=csv_header)
+        cap = cv2.VideoCapture(tmp_name)
+        local_frame_idx = 0
+
+        while True:
+            success, frame_bgr = cap.read()
+            if not success:
+                break  # no more frames in video
+            total_frames_read += 1
+
+            skip_this_frame = False
+            # Gather Bolus masks if there's annotation
+            bolus_masks = []
+            if local_frame_idx in all_frames_annotations:
+                frame_data = all_frames_annotations[local_frame_idx]
+                for feat_id, feature in frame_data["objects"].items():
+                    if feature["name"] == "Bolus":
+                        mask_url = feature["mask"]["url"]
+                        try:
+                            r = requests.get(mask_url, headers=client.headers)
+                            r.raise_for_status()
+                        except requests.HTTPError as e:
+                            print(f"[Frame {local_frame_idx}] Error fetching mask: {e}, skipping frame.")
+                            skip_this_frame = True
+                            break
+
+                        if not r.content:
+                            print(f"[Frame {local_frame_idx}] Empty mask data, skipping frame.")
+                            skip_this_frame = True
+                            break
+
+                        partial_mask = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_GRAYSCALE)
+                        if partial_mask is None or partial_mask.size == 0:
+                            print(f"[Frame {local_frame_idx}] Could not decode partial mask, skipping.")
+                            skip_this_frame = True
+                            break
+
+                        bolus_masks.append(partial_mask)
+
+            if skip_this_frame:
+                # don't save anything for this frame
+                local_frame_idx += 1
+                skipped_frames_count += 1
+                continue
+
+            # Merge or create black
+            h, w = frame_bgr.shape[:2]
+            if len(bolus_masks) > 0:
+                combined_mask = np.zeros((h, w), dtype=np.uint8)
+                merge_failed = False
+                for pm in bolus_masks:
+                    if pm.shape != (h, w):
+                        print(f"[Frame {local_frame_idx}] Mask shape {pm.shape} != frame shape {(h,w)}, skipping frame.")
+                        merge_failed = True
+                        break
+                    try:
+                        combined_mask = cv2.add(combined_mask, pm)
+                    except cv2.error as e:
+                        print(f"[Frame {local_frame_idx}] cv2.add error: {e}, skipping frame.")
+                        merge_failed = True
+                        break
+
+                if merge_failed:
+                    local_frame_idx += 1
+                    skipped_frames_count += 1
+                    continue
+                final_mask = combined_mask
+            else:
+                # no bolus => black
+                final_mask = np.zeros((h, w), dtype=np.uint8)
+
+            # If we reach here => no error => we save the frame + mask
+            frame_filename = f"{global_frame_idx}.png"
+            mask_filename  = f"{global_frame_idx}_bolus.png"
+
+            cv2.imwrite(os.path.join(frames_output_dir, frame_filename),
+                        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+            cv2.imwrite(os.path.join(masks_output_dir, mask_filename),
+                        final_mask)
+
+            # Add to data_overview
+            data_overview.append({
+                "frame_idx": global_frame_idx,
+                "video_name": video_name,
+                "frame": local_frame_idx
+            })
+
+            saved_frames_count += 1
+            global_frame_idx += 1
+            local_frame_idx  += 1
+
+        cap.release()
+        os.remove(tmp_name)
+        total_videos += 1
+
+    # End of main loop
+    print("\nAll videos processed.")
+    print(f"  Total videos:         {total_videos}")
+    print(f"  Total frames read:    {total_frames_read}")
+    print(f"  Saved frames:         {saved_frames_count}")
+    print(f"  Skipped frames:       {skipped_frames_count}")
+
+    # Write final CSV
+    if data_overview:
+        with open(csv_path, mode="w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=csv_header)
             writer.writeheader()
             writer.writerows(data_overview)
+        print(f"Data overview CSV written at: {csv_path}")
+    else:
+        print("No frames saved => no data_overview.csv created.")
 
-
-def save_landmark_points(labels, output_directory, start_index=0, end_index=None) -> None:
-    """
-    Extracts key anatomical points from the provided Labelbox labels and saves them as .png images.
-
-    Parameters:
-    - labels (list): list of Labelbox labels (return value of the function 'export_labels')
-    - output_directory (str): directory where the landmarks are saved
-    - start_index: index at which to start processing the list of Labelbox labels (default: 0)
-    - end_index: index at which to stop processing the list of Labelbox labels (default: len('labels')))
-    """
-
-    # Set end_index to the length of the label list if no other value is provided
-    if end_index is None:
-        end_index = len(labels)
-
-    # List containing the names of the different anatomical points
-    landmark_list = ["BaseOfVallecula", "Epiglottis", "NasalSpine", "Arytenoids", "Cricoid", "Hyoid"]
-
-    # Counter for the total number of processed frames
-    global_frame_idx = 0
-
-    # Iterate over the data
-    for dr in labels[start_index:end_index]:
-        video_name = dr["data_row"]["external_id"]
-        # Iterate over each project that the current data row is associated with
-        for project_id, project_data in dr["projects"].items():
-            # Get the label of the current data row in the current project
-            label = project_data["labels"][0]
-            # Iterate over the annotations of each frame of the current label
-            for frame, frame_annotations in label["annotations"]["frames"].items():
-                # Iterate over the features of the annotation of the current frame
-                for feature_id, feature in frame_annotations["objects"].items():
-                    # If the current feature is a landmark point
-                    if feature["name"] in landmark_list:
-                        # Extract the x and y coordinates of the point
-                        x_coord = feature["point"]["x"]
-                        y_coord = feature["point"]["y"]
-
-                        # Create a black image with the same width and height as the video frames
-                        width, height = (
-                            dr["media_attributes"]["width"],
-                            dr["media_attributes"]["height"],
-                        )
-                        image = np.zeros((height, width), dtype=np.uint8)
-
-                        # Mark the position of the landmark point with a white circle on the black image
-                        x, y = int(x_coord), int(y_coord)
-                        result_image = cv2.circle(image, (x, y), 5, (255), -1)
-
-                        # Save the image as '<global_frame_idx>_<f_name>.png' where 'f_name' is the
-                        # name of the current anatomical point
-                        f_name = feature["name"]
-                        image_filename = f"{global_frame_idx}_{f_name.lower()}.png"
-                        image_path = os.path.join(output_directory, image_filename)
-                        cv2.imwrite(image_path, result_image)
-
-                global_frame_idx += 1
-
-
-def save_masks(labels: List[Dict], output_directory: str, client, start_index=0, end_index=None):
-    """
-    Exports masks of the bolus from Labelbox and creates masks of the other area features for each
-    video frame in the provided Labelbox labels. All masks are saved as .png images.
-
-    Parameters:
-    - labels (list): list of Labelbox labels (return value of the function 'export_labels')
-    - output_directory (str): directory where the masks are saved
-    - client (labelbox.client.Client): Labelbox client to export the Bolus masks from Labelbox
-    - start_index (int): index at which to start processing the list of Labelbox labels (default: 0)
-    - end_index (int): index at which to stop processing the list of Labelbox labels (default: len('labels')))
-    """
-
-    # Set end_index to the length of the label list if no other value is provided
-    if end_index is None:
-        end_index = len(labels)
-
-    # List containing the names of the different area features
-    area_features_list = ["Pharynx", "SpineArea", "Esophagus", "Airway", "OralArea"]
-
-    # Counter for the total number of processed frames
-    global_frame_idx = 0
-
-    # Iterate over the data
-    for dr in labels[start_index:end_index]:
-        video_name = dr["data_row"]["external_id"]
-        # Iterate over each project that the current data row is associated with
-        for project_id, project_data in dr["projects"].items():
-            # Get the label of the current data row in the current project
-            label = project_data["labels"][0]
-            # Iterate over the annotations of each frame of the current label
-            for frame, frame_data in label["annotations"]["frames"].items():
-                # Counter for the subfeatures (single vertebrae) of the 'SpineArea' feature
-                spinearea_counter = 1
-
-                # List for collecting the bolus masks of the current frame
-                # (there could be more than one bolus mask for a single frame)
-                bolus_masks = []
-
-                # Iterate over the features of the annotation of the current frame
-                features_list = list(frame_data["objects"].values())
-                for feature_idx in range(len(features_list)):
-                    feature = features_list[feature_idx]
-
-                    # If the current feature is a bolus mask
-                    if feature["name"] == "Bolus":
-
-                        # Fetch the bolus mask from the Labelbox website
-                        mask_url = feature["mask"]["url"]
-                        mask_data = requests.get(mask_url, headers=client.headers).content
-                        if mask_data:
-                            img_stream = BytesIO(mask_data)
-                            mask = cv2.imdecode(
-                                np.frombuffer(img_stream.read(), np.uint8),
-                                cv2.IMREAD_GRAYSCALE,
-                            )
-                            # Append the mask to the list of bolus masks of the current frame
-                            bolus_masks.append(mask)
-
-                    # If the current feature is another area feature
-                    if feature["name"] in area_features_list:
-                        # Extract the coordinates of the points defining the feature's outline
-                        pts = [(point["x"], point["y"]) for point in feature["line"]]
-                        pts.append(pts[0])
-                        pts = np.array(pts, dtype=np.int32)
-
-                        # Create a black image with the same width and height as the video frames
-                        width, height = dr["media_attributes"]["width"], dr["media_attributes"]["height"]
-                        mask = np.zeros((height, width), dtype=np.uint8)
-
-                        # Fill the inside of the feature's outline with white pixels to create a mask
-                        mask = cv2.fillPoly(mask, [pts], 255)
-
-                        # Save the created masks as .png image
-                        if feature["name"] == "SpineArea":
-                            image_filename = f"{global_frame_idx}_spinearea_{spinearea_counter}.png"
-                            spinearea_counter += 1
-                        else:
-                            f_name = feature["name"]
-                            image_filename = f"{global_frame_idx}_{f_name.lower()}.png"
-                        image_path = os.path.join(output_directory, image_filename)
-                        cv2.imwrite(image_path, mask)
-
-                # If there are any bolus masks for the current frame
-                if len(bolus_masks) > 0:
-                    # Create a black image with the same width and height as the video frames for
-                    # merging the (potentially multiple) bolus masks of the current frame
-                    mask = np.zeros_like(bolus_masks[0], dtype=np.uint8)
-
-                    # Add all of the bolus masks to the created black image
-                    merging_successful = True
-                    for partial_mask in bolus_masks:
-                        try:
-                            mask = cv2.add(mask, partial_mask)
-                        except cv2.error as error:
-                            print(f"Error combining bolus masks in frame {global_frame_idx}: {error}")
-                            # If the merging causes an error, skip this iteration and continue with the next one
-                            merging_successful = False
-                            continue
-
-                            # If the merging was successful, save the merged bolus mask as .png image
-                    if merging_successful:
-                        image_filename = f"{global_frame_idx}_bolus.png"
-                        cv2.imwrite(os.path.join(output_directory, image_filename), mask)
-                    # Else retry fetching the bolus masks
-                    else:
-                        feature_idx -= 1
-
-                global_frame_idx += 1
 
 
 def main(api_key, project_id, output_directory):
@@ -360,16 +289,26 @@ def main(api_key, project_id, output_directory):
     project = client.get_project(project_id)
 
     # Recreate the directory '<output_directory>/output' to avoid confusion with the output of previous runs
-    output_directory = os.path.join(output_directory, "labelbox_output")
     if os.path.exists(output_directory):
         shutil.rmtree(output_directory)
     # Create the directories 'frames', 'masks' and 'landmarks' as subdirectories of '<output_directory>/output'
     # for storing the exported video frames and created masks and landmarks
-    output_subdirectories = ["frames", "masks", "landmarks"]
+    output_subdirectories = ["imgs", "masks"]
     for sd in output_subdirectories:
         os.makedirs(os.path.join(output_directory, sd))
 
     # Export the labels from the Labelbox project
+    print("\nExporting the labels from the Labelbox project.\n")
+    labels = export_labels(project, output_directory)
+    export_frames_and_bolus_masks_skip_on_error(
+        labels,
+        os.path.join(output_directory, "imgs"),
+        os.path.join(output_directory, "masks"),
+        client,
+        os.path.join(output_directory, "data_overview.csv"),
+        start_index=0,
+        end_index=None)
+    '''
     print("\nExporting the labels from the Labelbox project.\n")
     labels = export_labels(project, output_directory)
 
@@ -380,13 +319,13 @@ def main(api_key, project_id, output_directory):
     # Extract the single video frames, landmark points, and area feature masks from the labels
     print("Extracting the single video frames from the exported labels.\n")
     export_video_frames(labels, os.path.join(output_directory, "frames"))
-    print("Extracting the landmark points from the exported labels.\n")
-    save_landmark_points(labels, os.path.join(output_directory, "landmarks"))
+    #print("Extracting the landmark points from the exported labels.\n")
+    #save_landmark_points(labels, os.path.join(output_directory, "landmarks"))
     print("Extracting the area feature masks from the exported labels.\n")
-    save_masks(labels, os.path.join(output_directory, "masks"), client)
+    save_bolus_masks_only(labels, os.path.join(output_directory, "masks"), client)
 
-    print("Finished exporting the labels. The output can be found in './labelbox_output_mbs_0119'.\n")
-
+    print(f"Finished exporting the labels. The output can be found in {output_directory}.\n")
+    '''
 
 # The following code block is only executed if this script is being run directly and not imported
 # as a module in another script.
@@ -394,9 +333,11 @@ def main(api_key, project_id, output_directory):
 # output directory) and calls the main function with these parsed arguments.
 if __name__ == "__main__":
     # Parser for the command line arguments
+    # Parser for the command line arguments
     parser = argparse.ArgumentParser(
         description="This scripts exports annotations of data on swallowing events from Labelbox."
     )
+    '''
     # Labelbox API key
     parser.add_argument(
         "-ak",
@@ -404,6 +345,7 @@ if __name__ == "__main__":
         type=str,
         help="API key for accessing Labelbox",
     )
+    '''
     # ID of the project from which the data rows should be exported
     # (ID can be found in the URL of the Labelbox project)
     parser.add_argument(
@@ -420,10 +362,13 @@ if __name__ == "__main__":
         help="Output directory to save exported data",
         default=".",
     )
+    # read api key from apikey.txt file
+    with open(r"labelbox_export/apikey.txt", "r") as f:
+        api_key = f.read().strip()
 
     # Parse the command line arguments
     args = parser.parse_args()
-    api_key = args.api_key
+    api_key = api_key #args.api_key
     project_id = args.project_id
     output_directory = args.output_directory
 

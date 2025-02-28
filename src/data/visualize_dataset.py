@@ -28,7 +28,11 @@ def overlay_mask_on_image(img_pil: Image.Image,
     base_np = np.array(img_pil)
 
     mask_overlay = np.zeros_like(base_np)
-    mask_overlay[mask != 0] = mask_color
+    try:
+        mask_overlay[mask != 0] = mask_color
+    except:
+        print(f"Error: Mask shape {mask.shape} does not match image shape {base_np.shape}")
+        return None
 
     result = (alpha * mask_overlay + (1 - alpha) * base_np).astype(np.uint8)
     return Image.fromarray(result)
@@ -54,6 +58,7 @@ def process_images(dataset_path, img_folder='imgs', mask_folder='masks', num_sam
     sampled_files = random.sample(img_files, num_samples)
 
     for img_file in sampled_files:
+        print(f"Processing: {img_file.name}")
         mask_file = mask_path / (img_file.stem + mask_suffix + img_file.suffix)
         if not mask_file.exists():
             print(f"Warning: No mask found for {img_file.name}, skipping.")
@@ -68,7 +73,7 @@ def process_images(dataset_path, img_folder='imgs', mask_folder='masks', num_sam
         overlayed_img = overlay_mask_on_image(img_pil.convert('RGB'), gt_mask)
 
         # Create side-by-side comparison plot
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        fig, ax = plt.subplots(1, 2, figsize=(10, 6))
         ax[0].imshow(img_pil, cmap='gray')
         ax[0].set_title('Original Image')
         ax[0].axis('off')

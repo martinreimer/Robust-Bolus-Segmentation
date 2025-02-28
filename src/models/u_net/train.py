@@ -20,6 +20,9 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset
 from utils.dice_score import dice_loss
+# disable user warnings
+import warnings
+warnings.filterwarnings("ignore")
 
 
 @contextmanager
@@ -108,6 +111,8 @@ def get_args() -> argparse.Namespace:
                         help='Maximum number of validation samples to use. If not set, use all.')
     parser.add_argument('--dataset-path', '-d', type=str, default='.',
                         help='Path to the dataset. Defaults to current directory.')
+    parser.add_argument('--mask-suffix', '-ms', type=str, default='_bolus',
+                        help='Suffix for mask files. Defaults to "_bolus".')
 
     # Checkpoint options
     parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint',
@@ -140,6 +145,7 @@ def get_augmentations() -> A.Compose:
     ], additional_targets={'mask': 'mask'})
 
 
+
 def prepare_datasets(args: argparse.Namespace) -> Tuple[BasicDataset, BasicDataset]:
     """
     Prepare training and validation datasets.
@@ -155,13 +161,13 @@ def prepare_datasets(args: argparse.Namespace) -> Tuple[BasicDataset, BasicDatas
     train_set = BasicDataset(
         base_dir=args.dataset_path,
         subset='train',
-        mask_suffix='_bolus',
+        mask_suffix=args.mask_suffix,
         transform=augmentations
     )
     val_set = BasicDataset(
         base_dir=args.dataset_path,
         subset='val',
-        mask_suffix='_bolus',
+        mask_suffix=args.mask_suffix,
         transform=None
     )
 
@@ -177,6 +183,7 @@ def prepare_datasets(args: argparse.Namespace) -> Tuple[BasicDataset, BasicDatas
     logging.info(f"Total validation samples: {len(val_set)}")
 
     return train_set, val_set
+
 
 
 def create_dataloaders(train_set: BasicDataset, val_set: BasicDataset, batch_size: int) -> Tuple[
@@ -485,7 +492,10 @@ def train_model(
             })
 
             # Log sample images from validation
-            log_validation_samples(model, val_loader, device, args.amp, experiment, epoch)
+            try:
+                log_validation_samples(model, val_loader, device, args.amp, experiment, epoch)
+            except Exception as e:
+                logging.error(f"Error logging validation samples: {e}")
 
             # Save checkpoint
             if args.save_checkpoint:
@@ -494,8 +504,10 @@ def train_model(
                 logging.info(f'Checkpoint {epoch} saved to {ckpt_path}')
 
             # Log training augmentations
-            log_train_augment_preview(train_loader.dataset, fixed_indices_to_track, epoch, experiment)
-
+            try:
+                log_train_augment_preview(train_loader.dataset, fixed_indices_to_track, epoch, experiment)
+            except Exception as e:
+                logging.error(f"Error logging training augmentations: {e}")
 
 def main():
     """
@@ -523,4 +535,7 @@ def main():
 
 if __name__ == '__main__':
     main()
-#python train.py -e 10 -b 32 -ts 200 -vs 50 -d ../../../data/processed/dataset_first_experiments
+#python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/processed/dataset_first_experiments
+#python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/foreback/processed
+
+#python train.py -e 10 -b 32 -ts 80 -vs 30 -d D:/Martin/thesis/data/processed/dataset_0228_final
