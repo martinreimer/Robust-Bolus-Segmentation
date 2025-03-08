@@ -10,19 +10,18 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 import albumentations as A
-
+import argparse
+import logging
+import matplotlib.pyplot as plt
+import torch
+from torch.utils.data import DataLoader
 
 def load_image(filename, is_grayscale=True):
     ext = splitext(filename)[1].lower()
-    if ext == '.npy':
-        img = np.load(filename)
-    elif ext in ['.pt', '.pth']:
-        img = torch.load(filename).numpy()
+    if is_grayscale:
+        img = Image.open(filename).convert('L')
     else:
-        if is_grayscale:
-            img = Image.open(filename).convert('L')
-        else:
-            img = Image.open(filename)
+        img = Image.open(filename)
 
     # Now img has shape (H, W)
     img = np.asarray(img, dtype=np.float32)
@@ -112,28 +111,12 @@ class BasicDataset(Dataset):
             'image': img_tensor.float(),
             'mask': mask_tensor.float()
         }
-        '''
-            img = self.preprocess(img, is_mask=False)
-            mask = self.preprocess(mask, is_mask=True, mask_values=self.mask_values)
-    
-            img = np.array(img, dtype=np.float32, copy=True)
-            img_tensor = torch.as_tensor(img, dtype=torch.float32).unsqueeze(0)
-    
-            mask = np.array(mask, dtype=np.float32, copy=True)  # Ensure it's writable
-            mask_tensor = torch.as_tensor(mask, dtype=torch.float32).unsqueeze(0)
-    
-            return {
-                'image': img_tensor,  # shape: [1, H, W]
-                'mask': mask_tensor  # shape: [1, H, W]
-            }
-        '''
 
 
     @staticmethod
     def preprocess(img, is_mask=False, mask_values=None):
         """
-        `img` is (H, W) in float32.
-        If it's a mask, we might threshold or convert values to {0,1} for binary segmentation.
+        Preprocess images and masks: Normalize
         """
         h, w = img.shape
         # Resize
@@ -144,9 +127,53 @@ class BasicDataset(Dataset):
             # Example: if masks are 0/255, convert to 0/1
             if len(mask_values) == 2 and 0 in mask_values and 255 in mask_values:
                 img = (img > 127).astype(np.float32)
-            # shape is (newH, newW), single channel will be added below
         else:
             # For grayscale images, normalize to [0,1]
             img = img / 255.0
 
         return img
+
+
+# test it
+# dataset = BasicDataset(base_dir='D:/Martin/thesis/data/processed/dataset_0228_final', subset='train', mask_suffix='_bolus', transform=None)
+# sample = dataset[0]
+
+
+
+def test_it():
+    dataset_path = 'D:/Martin/thesis/data/processed/dataset_0228_final'
+    subset='train'
+    mask_suffix = '_bolus'
+    num_samples=5
+    batch_size=1
+
+    # Initialize the dataset (this uses your provided BasicDataset implementation)
+    dataset = BasicDataset(base_dir=dataset_path, subset=subset, mask_suffix=mask_suffix, transform=None)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    logging.info(f"Dataset size: {len(dataset)}")
+
+    # Iterate through the DataLoader and plot images with their corresponding masks.
+    for idx, sample in enumerate(dataloader):
+        # sample is a dictionary with 'image' and 'mask' tensors of shape (B, 1, H, W)
+        image = sample['image'][0].squeeze(0).numpy()  # (H, W)
+        mask = sample['mask'][0].squeeze(0).numpy()  # (H, W)
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        axes[0].imshow(image, cmap='gray')
+        axes[0].set_title('Image')
+        axes[0].axis('off')
+
+        axes[1].imshow(mask, cmap='gray')
+        axes[1].set_title('Mask')
+        axes[1].axis('off')
+
+        plt.suptitle(f"Sample {idx}")
+        plt.show()
+
+        if idx + 1 >= num_samples:
+            break
+
+
+if __name__ == '__main__':
+    test_it()

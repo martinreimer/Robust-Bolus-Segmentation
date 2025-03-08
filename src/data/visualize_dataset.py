@@ -3,7 +3,9 @@ Script to overlay ground truth and prediction masks onto images for dataset sani
 It randomly selects a given number of images, overlays the masks, and saves the results
 in an 'overlays' folder inside the dataset directory.
 
-python visualize_dataset.py -p ../../data/processed/dataset_train_val_test_split/train -n 20 --mask_suffix _bolus
+python visualize_dataset.py -p D:\Martin\thesis\data\processed\dataset_0227_final\train -n 1500 --mask_suffix _bolus
+
+python visualize_dataset.py -p D:\Martin\thesis\data\processed\dataset_train_val_test_split\train -n 20 --mask_suffix _bolus
 """
 
 

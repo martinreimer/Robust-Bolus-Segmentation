@@ -3,23 +3,29 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
+import time
 
-import albumentations as A
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, Subset
+
 from tqdm import tqdm
 import wandb
 from contextlib import contextmanager
 
+# my stuff
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset
 from utils.dice_score import dice_loss
+from utils.optimizer import get_optimizer
+from utils.scheduler import get_scheduler
+
+import albumentations as A
+os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
+
 # disable user warnings
 import warnings
 warnings.filterwarnings("ignore")
@@ -59,7 +65,7 @@ def setup_logging(log_level: str = 'INFO', log_file: str = 'training.log') -> No
         level=numeric_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file),
+            logging.FileHandler(log_file, encoding='utf-8'),
             logging.StreamHandler()
         ]
     )
@@ -93,7 +99,7 @@ def get_args() -> argparse.Namespace:
 
     # Training parameters
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1,
+    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=16,
                         help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
@@ -101,8 +107,30 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
                         help='Percent of the data used as validation (0-100)')
-    parser.add_argument('--amp', action='store_true', default=True, help='Use mixed precision')  # always true
+    parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')  # always true
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
+
+    # Loss function options
+    parser.add_argument('--loss', type=str, default='dice', choices=['bce', 'dice', 'iou', 'combined'],
+                        help='Loss function to use. Options: "bce", "dice", "iou", "combined"')
+    parser.add_argument('--combined-bce-weight', type=float, default=1.0,
+                        help='Weight for the BCE component in combined loss')
+    parser.add_argument('--combined-dice-weight', type=float, default=1.0,
+                        help='Weight for the Dice component in combined loss')
+
+    # Learning rate scheduler options:
+    # Scheduler options
+    parser.add_argument('--scheduler', type=str, default='plateau', choices=['step', 'exponential', 'plateau'],
+                        help='Learning rate scheduler to use: "step" for StepLR, "exponential" for ExponentialLR, '
+                             '"plateau" for ReduceLROnPlateau')
+    parser.add_argument('--lr-step-size', type=int, default=10,
+                        help='Step size for StepLR scheduler (number of epochs between decays)')
+    parser.add_argument('--lr-gamma', type=float, default=0.1,
+                        help='Decay factor for the scheduler (gamma)')
+    parser.add_argument('--lr-patience', type=int, default=3,
+                        help='Patience for ReduceLROnPlateau scheduler')
+    parser.add_argument('--lr-mode', type=str, default='min', choices=['min', 'max'],
+                        help='Mode for ReduceLROnPlateau scheduler; typically "min" for loss')
 
     # Dataset options
     parser.add_argument('--train-samples', '-ts', type=int, default=None,
@@ -113,6 +141,11 @@ def get_args() -> argparse.Namespace:
                         help='Path to the dataset. Defaults to current directory.')
     parser.add_argument('--mask-suffix', '-ms', type=str, default='_bolus',
                         help='Suffix for mask files. Defaults to "_bolus".')
+
+    # Optimizer options
+    parser.add_argument('--optimizer', type=str, default='rmsprop',
+                        choices=['adam', 'nadam', 'rmsprop', 'sgd', 'adadelta', 'adagrad', 'adamax'],
+                        help='Optimizer to use. Options: "adam", "nadam", "rmsprop", "sgd", "adadelta", "adagrad", "adamax"')
 
     # Checkpoint options
     parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint',
@@ -140,8 +173,8 @@ def get_augmentations() -> A.Compose:
     """
     return A.Compose([
         A.HorizontalFlip(p=0.5),
-        A.Rotate(limit=10, p=0.5, value=0, mask_value=0),
-        A.RandomBrightnessContrast(p=0.1, brightness_limit=0.025, contrast_limit=0.025),
+        #A.Rotate(limit=10, p=0.5, value=0, mask_value=0),
+        #A.RandomBrightnessContrast(p=0.1, brightness_limit=0.025, contrast_limit=0.025),
     ], additional_targets={'mask': 'mask'})
 
 
@@ -278,17 +311,103 @@ def log_train_augment_preview(dataset: BasicDataset, fixed_indices: list, epoch:
             logging.warning(f"Index {idx} is out of range for the dataset.")
 
 
+def compute_imbalance_pos_weight(dataset: BasicDataset) -> float:
+    """
+    Compute the positive class weight for BCE loss based on the inverse class frequency
+    from the training dataset masks.
+
+    Args:
+        dataset (BasicDataset): The training dataset (or its subset).
+
+    Returns:
+        float: The computed pos_weight = total_negatives / total_positives.
+    """
+    total_pos = 0.0
+    total_pixels = 0.0
+    for sample in dataset:
+        # Assuming mask is a tensor or can be converted to one
+        mask = sample['mask']
+        if not torch.is_tensor(mask):
+            mask = torch.tensor(mask, dtype=torch.float32)
+        else:
+            mask = mask.float()
+        total_pos += mask.sum().item()
+        total_pixels += mask.numel()
+    total_neg = total_pixels - total_pos
+    # Avoid division by zero
+    pos_weight = total_neg / (total_pos + 1e-8)
+    logging.info(f'Computed pos_weight: {pos_weight:.4f} (Total negatives: {total_neg}, Total positives: {total_pos})')
+    return pos_weight
+
+
+
+def get_loss(loss_name: str, pos_weight: float = None,
+             combined_bce_weight: float = 1.0, combined_dice_weight: float = 1.0):
+    """
+    Returns a loss function based on the provided loss_name.
+
+    Args:
+        loss_name (str): Choice of loss ("bce", "dice", "iou", "combined").
+        pos_weight (float, optional): Positive class weight for BCE loss (based on inverse class frequency).
+        combined_bce_weight (float): Weight for the BCE component in the combined loss.
+        combined_dice_weight (float): Weight for the Dice component in the combined loss.
+
+    Returns:
+        A callable loss function.
+    """
+    loss_name = loss_name.lower()
+
+    if loss_name == 'bce':
+        # Use pos_weight if provided
+        if pos_weight is not None:
+            pos_weight_tensor = torch.tensor([pos_weight])
+            return nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+        else:
+            return nn.BCEWithLogitsLoss()
+
+    elif loss_name == 'dice':
+        # Dice loss callable
+        return lambda pred, target: dice_loss(torch.sigmoid(pred), target, multiclass=False)
+
+    elif loss_name == 'iou':
+        # IoU loss implementation
+        def iou_loss(pred, target, smooth=1e-6):
+            pred = torch.sigmoid(pred)
+            intersection = (pred * target).sum()
+            union = pred.sum() + target.sum() - intersection
+            iou = (intersection + smooth) / (union + smooth)
+            return 1 - iou
+
+        return iou_loss
+
+    elif loss_name == 'combined':
+        # Combined loss: weighted BCE (with optional pos_weight) plus Dice loss.
+        if pos_weight is not None:
+            bce_loss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]))
+        else:
+            bce_loss = nn.BCEWithLogitsLoss()
+
+        def combined_loss(pred, target):
+            loss_bce = bce_loss(pred, target)
+            loss_dice = dice_loss(torch.sigmoid(pred), target, multiclass=False)
+            return combined_bce_weight * loss_bce + combined_dice_weight * loss_dice
+
+        return combined_loss
+
+    else:
+        raise ValueError(f"Unsupported loss function: {loss_name}")
+
 def train_one_epoch(
         model: nn.Module,
         loader: DataLoader,
         optimizer: optim.Optimizer,
-        criterion: nn.Module,
+        criterion,
         device: torch.device,
         amp: bool,
         grad_scaler: torch.cuda.amp.GradScaler,
         experiment,
         global_step: int,
-        epoch: int
+        epoch: int,
 ) -> Tuple[float, float]:
     """
     Train the model for one epoch.
@@ -321,16 +440,15 @@ def train_one_epoch(
 
             with torch.amp.autocast(device_type=device.type, enabled=amp):
                 masks_pred = model(images)
-                loss_bce = criterion(masks_pred, true_masks)
-                loss_dice = dice_loss(torch.sigmoid(masks_pred), true_masks, multiclass=False)
-                loss = loss_bce + loss_dice
+                loss = criterion(masks_pred, true_masks)
 
             optimizer.zero_grad(set_to_none=True)
             grad_scaler.scale(loss).backward()
 
             # Unscale gradients and compute gradient norm
             grad_scaler.unscale_(optimizer)
-            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            #### !!!!!!!!!! i changed max norm from 1 to 10 temp
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             epoch_grad_norm += total_norm.item()
 
             grad_scaler.step(optimizer)
@@ -347,6 +465,8 @@ def train_one_epoch(
     avg_loss = epoch_loss / num_batches
     avg_grad_norm = epoch_grad_norm / num_batches
     return avg_loss, avg_grad_norm
+
+
 
 
 def log_validation_samples(model: nn.Module, loader: DataLoader, device: torch.device, amp: bool, experiment,
@@ -378,7 +498,7 @@ def log_validation_samples(model: nn.Module, loader: DataLoader, device: torch.d
                 if sample_count >= max_samples:
                     return
                 experiment.log({
-                    f"examples/epoch_{epoch}_sample_{sample_count}": [
+                    f"examples/sample_{sample_count}_epoch_{epoch}": [
                         wandb.Image(images[i].cpu(), caption="Input"),
                         wandb.Image(true_masks[i].cpu(), caption="True Mask"),
                         wandb.Image(pred_masks_bin[i].cpu(), caption="Predicted Mask"),
@@ -403,6 +523,8 @@ def save_final_model(model: nn.Module, args: argparse.Namespace) -> None:
     logging.info(f'Final model saved to {final_model_path}')
 
 
+
+
 def train_model(
         model: nn.Module,
         device: torch.device,
@@ -410,29 +532,17 @@ def train_model(
         val_loader: DataLoader,
         args: argparse.Namespace
 ) -> None:
-    """
-    Train the UNet model.
-
-    Args:
-        model (nn.Module): The model to train.
-        device (torch.device): Device for computations.
-        train_loader (DataLoader): DataLoader for training data.
-        val_loader (DataLoader): DataLoader for validation data.
-        args (argparse.Namespace): Parsed command-line arguments.
-    """
-    # Create a run directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path("./runs") / f"run-{timestamp}"
     checkpoints_dir = run_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
-
     logging.info(f"Checkpoints and final model will be saved to: {checkpoints_dir}")
 
-    # Initialize WandB
+    pos_weight = compute_imbalance_pos_weight(train_loader.dataset)
+
     with wandb_run(project='U-Net', config=vars(args)) as experiment:
         n_train = len(train_loader.dataset)
         n_val = len(val_loader.dataset)
-
         logging.info(f'''Starting training:
             Epochs:          {args.epochs}
             Batch size:      {args.batch_size}
@@ -444,70 +554,87 @@ def train_model(
             Mixed Precision: {args.amp}
         ''')
 
-        # Setup optimizer, scheduler, and loss function
-        optimizer = optim.RMSprop(model.parameters(),
-                                  lr=args.lr,
-                                  weight_decay=1e-8,
-                                  momentum=0.999,
-                                  foreach=True)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
-        grad_scaler = torch.amp.GradScaler(device.type, enabled=args.amp)
-        criterion = nn.BCEWithLogitsLoss()
+        optimizer = get_optimizer(model, args)
+        scheduler = get_scheduler(optimizer, args)
+        grad_scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+        criterion = get_loss(
+            loss_name=args.loss,
+            pos_weight=pos_weight,
+            combined_bce_weight=args.combined_bce_weight,
+            combined_dice_weight=args.combined_dice_weight
+        )
 
         global_step = 0
-        fixed_indices_to_track = [0, len(train_loader.dataset) // 2, len(train_loader.dataset) - 1] if len(
-            train_loader.dataset) > 0 else []
+        fixed_indices_to_track = [0, len(train_loader.dataset) // 2, len(train_loader.dataset) - 1] if len(train_loader.dataset) > 0 else []
 
+        total_training_start = time.time()
         for epoch in range(1, args.epochs + 1):
+            epoch_start = time.time()
             epoch_loss, epoch_grad_norm = train_one_epoch(
                 model, train_loader, optimizer, criterion, device, args.amp, grad_scaler, experiment, global_step, epoch
             )
+            train_epoch_time = (time.time() - epoch_start) / 60.0
             global_step += len(train_loader)
 
-            # Validation
-            val_dice, val_loss = evaluate(
-                net=model,
-                dataloader=val_loader,
-                device=device,
-                amp=args.amp,
-                criterion=criterion
-            )
-            scheduler.step(val_dice)
+            # Validation and timing
+            val_start = time.time()
+            val_metrics = evaluate(net=model, dataloader=val_loader, device=device, amp=args.amp, criterion=criterion, pos_weight=pos_weight)
+            val_epoch_time = val_metrics['val_time']
+            total_epoch_time = (time.time() - epoch_start) / 60.0
 
             logging.info(f'''Epoch {epoch} / {args.epochs}:
                 Train Loss: {epoch_loss:.4f}
-                Val Dice:   {val_dice:.4f}
-                Val Loss:   {val_loss:.4f}
+                Val Loss:   {val_metrics['val_loss']:.4f}
+                Weighted CE: {val_metrics['val_weighted_ce']:.4f}
+                Dice:       {val_metrics['val_dice']:.4f}
+                IoU:        {val_metrics['val_iou']:.4f}
                 Grad Norm:  {epoch_grad_norm:.4f}
+                Total Epoch Time (min): {total_epoch_time:.2f}
+                Train Time (min): {train_epoch_time:.2f}
+                Val Time (min):   {val_epoch_time:.2f}
             ''')
 
-            # Log epoch-level metrics to WandB
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_metrics['val_loss'])
+            else:
+                scheduler.step()
+
             experiment.log({
                 'epoch': epoch,
                 'learning_rate': optimizer.param_groups[0]['lr'],
+                'train_loss': epoch_loss,
                 'train_loss_epoch': epoch_loss,
-                'val_dice_epoch': val_dice,
-                'val_loss_epoch': val_loss,
-                'grad_norm_epoch': epoch_grad_norm
+                'val_loss_epoch': val_metrics['val_loss'],
+                'val_weighted_ce': val_metrics['val_weighted_ce'],
+                'val_dice': val_metrics['val_dice'],
+                'val_iou': val_metrics['val_iou'],
+                'grad_norm_epoch': epoch_grad_norm,
+                'train_time_min': train_epoch_time,
+                'val_time_min': val_epoch_time,
+                'total_epoch_time_min': total_epoch_time,
             })
 
-            # Log sample images from validation
             try:
                 log_validation_samples(model, val_loader, device, args.amp, experiment, epoch)
             except Exception as e:
                 logging.error(f"Error logging validation samples: {e}")
 
-            # Save checkpoint
             if args.save_checkpoint:
                 ckpt_path = checkpoints_dir / f'checkpoint_epoch{epoch}.pth'
                 torch.save(model.state_dict(), ckpt_path)
                 logging.info(f'Checkpoint {epoch} saved to {ckpt_path}')
 
-            # Log training augmentations
             try:
                 log_train_augment_preview(train_loader.dataset, fixed_indices_to_track, epoch, experiment)
             except Exception as e:
                 logging.error(f"Error logging training augmentations: {e}")
+
+        total_training_time = (time.time() - total_training_start) / 60.0
+        experiment.log({'total_training_time_min': total_training_time})
+        logging.info(f"Total training time: {total_training_time:.2f} minutes")
+
+
+
 
 def main():
     """
@@ -538,4 +665,4 @@ if __name__ == '__main__':
 #python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/processed/dataset_first_experiments
 #python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/foreback/processed
 
-#python train.py -e 10 -b 32 -ts 80 -vs 30 -d D:/Martin/thesis/data/processed/dataset_0228_final
+#python train.py -e 30 -b 16 -ts 100 -vs 30 -d D:/Martin/thesis/data/processed/dataset_0228_final
