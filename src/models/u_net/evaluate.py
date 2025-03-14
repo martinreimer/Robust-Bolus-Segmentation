@@ -19,37 +19,6 @@ def compute_iou(mask_pred, mask_true, threshold=0.5, smooth=1e-6):
     return iou.mean().item()
 
 
-'''
-@torch.inference_mode()
-def evaluate(net, dataloader, device, amp, criterion):
-    net.eval()
-    num_val_batches = len(dataloader)
-    dice_score = 0
-    total_loss = 0.0
-
-    # iterate over the validation set
-    with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-        for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
-            image, mask_true = batch['image'], batch['mask']
-
-            # move images and labels to correct device and type
-            image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            mask_true = mask_true.to(device=device, dtype=torch.float32)
-
-            # predict the mask
-            mask_pred = net(image)
-
-            assert mask_true.min() >= 0 and mask_true.max() <= 1, 'True mask indices should be in [0, 1]'
-
-            # Compute loss
-            loss = criterion(mask_pred, mask_true)
-
-            total_loss += loss.item()
-
-    net.train()
-    return total_loss / max(num_val_batches, 1)
-
-'''
 
 @torch.inference_mode()
 def evaluate(net, dataloader, device, amp, criterion, pos_weight=None):
@@ -91,11 +60,13 @@ def evaluate(net, dataloader, device, amp, criterion, pos_weight=None):
     avg_weighted_ce = total_weighted_ce / max(num_val_batches, 1)
     avg_dice = total_dice / max(num_val_batches, 1)
     avg_iou = total_iou / max(num_val_batches, 1)
+    avg_dice_bce = avg_dice + avg_weighted_ce
 
     return {
         'val_loss': avg_loss,
         'val_weighted_ce': avg_weighted_ce,
         'val_dice': avg_dice,
         'val_iou': avg_iou,
-        'val_time': val_time
+        'val_time': val_time,
+        'val_bce_dice': avg_dice_bce
     }

@@ -6,7 +6,8 @@ Changes:
     - If no mask is found for a frame, we create an all-black mask for that frame.
     - If a bolus mask is corrupt or cannot be fetched or cannot be merged, we write an all-white image (will be removed later)
     - We now read the API key from a file named 'apikey.txt' in the same directory as this script.
-    - We now suppress deprecation warnings
+    - We now suppress deprecation warnings.
+    - The exported CSV now includes additional columns: "id", "dataset_name", "project_source" and "shared_video_id".
 """
 
 import labelbox as lb
@@ -18,16 +19,12 @@ import requests
 from io import BytesIO
 import numpy as np
 import tempfile
-import requests
 import argparse
 from typing import List, Dict
 import csv
 from tqdm import tqdm
-
-# surpress deprecation warnings
 import warnings
 warnings.filterwarnings("ignore")
-
 
 
 def export_labels(project, output_directory):
@@ -42,7 +39,6 @@ def export_labels(project, output_directory):
     Returns:
     - labels (list): list containing the exported labels
     """
-
     # Start the export of the labels
     task = project.export_v2(
         params={
@@ -60,15 +56,14 @@ def export_labels(project, output_directory):
     try:
         task.wait_till_done()
 
-        # Check if any errors occured during the export
+        # Check if any errors occurred during the export
         if task.errors:
             print(f"An error occurred while trying to export the labels: {task.errors}")
             return None
 
-        # Access the result if no errors occured
+        # Access the result if no errors occurred
         labels = task.result
 
-    # Handle any exception that might have occurred during the label export
     except Exception as e:
         print(f"An error occurred while trying to export the labels: {e}")
         return None
@@ -82,6 +77,7 @@ def export_labels(project, output_directory):
         ndjson.dump(labels, output_file)
 
     return labels
+
 
 def export_frames_and_bolus_masks_skip_on_error(
     labels,
@@ -104,9 +100,8 @@ def export_frames_and_bolus_masks_skip_on_error(
          4) If everything is fine, save the frame & mask with a consistent global_frame_idx.
       - We record each SUCCESSFUL frame in `data_overview.csv`.
 
-    We'll print a summary at the end with total frames read, total frames saved,
-    total frames skipped. The resulting CSV has 3 columns:
-    [frame_idx, video_name, local_frame_idx].
+    The resulting CSV has the following columns:
+    [frame_idx, video_name, id, dataset_name, project_source, shared_video_id, frame]
 
     Args:
         labels (List[Dict]): The exported Labelbox data
@@ -120,9 +115,8 @@ def export_frames_and_bolus_masks_skip_on_error(
     if end_index is None:
         end_index = len(labels)
 
-    # Prepare for CSV logging
-    data_overview = []
-    csv_header = ["frame_idx", "video_name", "frame"]
+    # Prepare for CSV logging with additional columns
+    csv_header = ["frame_idx", "video_name", "id", "dataset_name", "project_source", "shared_video_id", "frame"]
 
     # Some counters for summary
     total_videos = 0
@@ -134,7 +128,7 @@ def export_frames_and_bolus_masks_skip_on_error(
 
     print(f"Starting to process {end_index - start_index} labeled videos ...")
 
-    for idx, dr in tqdm(enumerate(labels[start_index:end_index], start=start_index), total=end_index-start_index):
+    for idx, dr in tqdm(enumerate(labels[start_index:end_index], start=start_index), total=end_index - start_index):
         video_name = dr["data_row"]["external_id"]
         video_url  = dr["data_row"]["row_data"]
 
@@ -154,7 +148,7 @@ def export_frames_and_bolus_masks_skip_on_error(
             print(f"ERROR: Could not download video for {video_name}. HTTPError: {e}")
             continue  # skip entire video
 
-        # Write video to a temp file for OpenCV
+        # Write video to a temporary file for OpenCV
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp.write(resp.content)
             tmp_name = tmp.name
@@ -169,7 +163,7 @@ def export_frames_and_bolus_masks_skip_on_error(
             total_frames_read += 1
 
             skip_this_frame = False
-            # Gather Bolus masks if there's annotation
+            # Gather Bolus masks if there's annotation for this frame
             bolus_masks = []
             if local_frame_idx in all_frames_annotations:
                 frame_data = all_frames_annotations[local_frame_idx]
@@ -198,19 +192,18 @@ def export_frames_and_bolus_masks_skip_on_error(
                         bolus_masks.append(partial_mask)
 
             if skip_this_frame:
-                # don't save anything for this frame
                 local_frame_idx += 1
                 skipped_frames_count += 1
                 continue
 
-            # Merge or create black
+            # Merge masks or create an all-black mask
             h, w = frame_bgr.shape[:2]
             if len(bolus_masks) > 0:
                 combined_mask = np.zeros((h, w), dtype=np.uint8)
                 merge_failed = False
                 for pm in bolus_masks:
                     if pm.shape != (h, w):
-                        print(f"[Frame {local_frame_idx}] Mask shape {pm.shape} != frame shape {(h,w)}, skipping frame.")
+                        print(f"[Frame {local_frame_idx}] Mask shape {pm.shape} != frame shape {(h, w)}, skipping frame.")
                         merge_failed = True
                         break
                     try:
@@ -226,10 +219,10 @@ def export_frames_and_bolus_masks_skip_on_error(
                     continue
                 final_mask = combined_mask
             else:
-                # no bolus => black
+                # No bolus annotation => create an all-black mask.
                 final_mask = np.zeros((h, w), dtype=np.uint8)
 
-            # If we reach here => no error => we save the frame + mask
+            # Save the frame and mask
             frame_filename = f"{global_frame_idx}.png"
             mask_filename  = f"{global_frame_idx}_bolus.png"
 
@@ -238,12 +231,44 @@ def export_frames_and_bolus_masks_skip_on_error(
             cv2.imwrite(os.path.join(masks_output_dir, mask_filename),
                         final_mask)
 
-            # Add to data_overview
-            data_overview.append({
+            # Extract additional data for CSV:
+            # Get the unique id and dataset_name from the "data_row" field.
+            row_id = dr["data_row"]["id"]
+            dataset_name = dr["data_row"].get("details", {}).get("dataset_name", "")
+            # Pick the first project's name as the project_source.
+            project_source = ""
+            if dr.get("projects"):
+                project_source = list(dr["projects"].values())[0].get("name", "")
+
+            # Create shared_video_id.
+            # For a video name starting with "Example_", remove the prefix and reconstruct the usual video id.
+            if video_name.startswith("Example_"):
+                # Remove the prefix
+                stripped = video_name[len("Example_"):]
+                base, ext = os.path.splitext(stripped)
+                parts = base.split('_')
+                # If there are more than 4 parts, assume the usual video id consists of the first 4 tokens.
+                if len(parts) > 4:
+                    shared_video_id = '_'.join(parts[:4]) + ext
+                else:
+                    shared_video_id = stripped
+            else:
+                shared_video_id = video_name
+
+            # Append row info to CSV data list
+            data_row = {
                 "frame_idx": global_frame_idx,
                 "video_name": video_name,
+                "id": row_id,
+                "dataset_name": dataset_name,
+                "project_source": project_source,
+                "shared_video_id": shared_video_id,
                 "frame": local_frame_idx
-            })
+            }
+            # Add row to data_overview
+            if 'data_overview' not in locals():
+                data_overview = []
+            data_overview.append(data_row)
 
             saved_frames_count += 1
             global_frame_idx += 1
@@ -253,15 +278,15 @@ def export_frames_and_bolus_masks_skip_on_error(
         os.remove(tmp_name)
         total_videos += 1
 
-    # End of main loop
+    # End of processing loop
     print("\nAll videos processed.")
     print(f"  Total videos:         {total_videos}")
     print(f"  Total frames read:    {total_frames_read}")
     print(f"  Saved frames:         {saved_frames_count}")
     print(f"  Skipped frames:       {skipped_frames_count}")
 
-    # Write final CSV
-    if data_overview:
+    # Write final CSV if there are saved frames
+    if 'data_overview' in locals() and data_overview:
         with open(csv_path, mode="w", newline="") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=csv_header)
             writer.writeheader()
@@ -269,7 +294,6 @@ def export_frames_and_bolus_masks_skip_on_error(
         print(f"Data overview CSV written at: {csv_path}")
     else:
         print("No frames saved => no data_overview.csv created.")
-
 
 
 def main(api_key, project_id, output_directory):
@@ -282,17 +306,15 @@ def main(api_key, project_id, output_directory):
     project_id (str): ID of the project from which the labels should be exported
     output_directory (str): directory where the exported data is saved
     """
-
     # Initialize the Labelbox client with the provided API key
     client = lb.Client(api_key=api_key)
     # Get the project from the client using the provided project ID
     project = client.get_project(project_id)
 
-    # Recreate the directory '<output_directory>/output' to avoid confusion with the output of previous runs
+    # Recreate the output directory to avoid confusion with previous runs
     if os.path.exists(output_directory):
         shutil.rmtree(output_directory)
-    # Create the directories 'frames', 'masks' and 'landmarks' as subdirectories of '<output_directory>/output'
-    # for storing the exported video frames and created masks and landmarks
+    # Create the directories for storing the exported video frames and masks
     output_subdirectories = ["imgs", "masks"]
     for sd in output_subdirectories:
         os.makedirs(os.path.join(output_directory, sd))
@@ -300,6 +322,10 @@ def main(api_key, project_id, output_directory):
     # Export the labels from the Labelbox project
     print("\nExporting the labels from the Labelbox project.\n")
     labels = export_labels(project, output_directory)
+    if labels is None:
+        print("No labels were exported. Exiting.")
+        return
+
     export_frames_and_bolus_masks_skip_on_error(
         labels,
         os.path.join(output_directory, "imgs"),
@@ -307,70 +333,35 @@ def main(api_key, project_id, output_directory):
         client,
         os.path.join(output_directory, "data_overview.csv"),
         start_index=0,
-        end_index=None)
-    '''
-    print("\nExporting the labels from the Labelbox project.\n")
-    labels = export_labels(project, output_directory)
+        end_index=None
+    )
 
-    # Get a list of the unique annotation categories used in the exported Labelbox labels
-    categories = get_annotation_categories(labels)
-    print("The exported labels contain the following annotation categories:\n", categories, sep="", end="\n\n")
 
-    # Extract the single video frames, landmark points, and area feature masks from the labels
-    print("Extracting the single video frames from the exported labels.\n")
-    export_video_frames(labels, os.path.join(output_directory, "frames"))
-    #print("Extracting the landmark points from the exported labels.\n")
-    #save_landmark_points(labels, os.path.join(output_directory, "landmarks"))
-    print("Extracting the area feature masks from the exported labels.\n")
-    save_bolus_masks_only(labels, os.path.join(output_directory, "masks"), client)
-
-    print(f"Finished exporting the labels. The output can be found in {output_directory}.\n")
-    '''
-
-# The following code block is only executed if this script is being run directly and not imported
-# as a module in another script.
-# If the code block is run, it parses the command line arguments (Labelbox API key, project ID,
-# output directory) and calls the main function with these parsed arguments.
 if __name__ == "__main__":
-    # Parser for the command line arguments
-    # Parser for the command line arguments
     parser = argparse.ArgumentParser(
-        description="This scripts exports annotations of data on swallowing events from Labelbox."
+        description="This script exports annotations of data on swallowing events from Labelbox."
     )
-    '''
-    # Labelbox API key
-    parser.add_argument(
-        "-ak",
-        "--api-key",
-        type=str,
-        help="API key for accessing Labelbox",
-    )
-    '''
-    # ID of the project from which the data rows should be exported
-    # (ID can be found in the URL of the Labelbox project)
+    # Project ID argument (ID can be found in the URL of the Labelbox project)
     parser.add_argument(
         "-pi",
         "--project-id",
         type=str,
         help="ID of the Labelbox project",
     )
-    # Output directory
+    # Output directory argument
     parser.add_argument(
         "-o",
         "--output-directory",
         type=str,
         help="Output directory to save exported data",
-        default=".",
+        default="."
     )
-    # read api key from apikey.txt file
+    # Read API key from file 'apikey.txt'
     with open(r"labelbox_export/apikey.txt", "r") as f:
         api_key = f.read().strip()
 
-    # Parse the command line arguments
     args = parser.parse_args()
-    api_key = api_key #args.api_key
     project_id = args.project_id
     output_directory = args.output_directory
 
-    # Call the main function with the parsed arguments
     main(api_key, project_id, output_directory)

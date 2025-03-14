@@ -123,7 +123,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--scheduler', type=str, default='plateau', choices=['step', 'exponential', 'plateau'],
                         help='Learning rate scheduler to use: "step" for StepLR, "exponential" for ExponentialLR, '
                              '"plateau" for ReduceLROnPlateau')
-    parser.add_argument('--lr-step-size', type=int, default=10,
+    parser.add_argument('--lr-step-size', type=int, default=5,
                         help='Step size for StepLR scheduler (number of epochs between decays)')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Decay factor for the scheduler (gamma)')
@@ -173,8 +173,6 @@ def get_augmentations() -> A.Compose:
     """
     return A.Compose([
         A.HorizontalFlip(p=0.5),
-        #A.Rotate(limit=10, p=0.5, value=0, mask_value=0),
-        #A.RandomBrightnessContrast(p=0.1, brightness_limit=0.025, contrast_limit=0.025),
     ], additional_targets={'mask': 'mask'})
 
 
@@ -360,16 +358,20 @@ def get_loss(loss_name: str, pos_weight: float = None,
     if loss_name == 'bce':
         # Use pos_weight if provided
         if pos_weight is not None:
-            pos_weight_tensor = torch.tensor([pos_weight])
+            print(f"Used Loss: BCE with pos_weight={pos_weight}")
+            pos_weight_tensor = torch.tensor([pos_weight], device='cuda')
             return nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
         else:
+            print("Used Loss: BCE")
             return nn.BCEWithLogitsLoss()
 
     elif loss_name == 'dice':
         # Dice loss callable
+        print("Used Loss: Dice")
         return lambda pred, target: dice_loss(torch.sigmoid(pred), target, multiclass=False)
 
     elif loss_name == 'iou':
+        print("Used Loss: IoU")
         # IoU loss implementation
         def iou_loss(pred, target, smooth=1e-6):
             pred = torch.sigmoid(pred)
@@ -382,16 +384,16 @@ def get_loss(loss_name: str, pos_weight: float = None,
 
     elif loss_name == 'combined':
         # Combined loss: weighted BCE (with optional pos_weight) plus Dice loss.
-        if pos_weight is not None:
-            bce_loss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]))
-        else:
-            bce_loss = nn.BCEWithLogitsLoss()
-
-        def combined_loss(pred, target):
+        # Capture pos_weight explicitly as a default parameter.
+        def combined_loss(pred, target, pos_weight=pos_weight):
+            if pos_weight is not None:
+                pos_weight_tensor = torch.tensor([pos_weight], device=pred.device)
+                bce_loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+            else:
+                bce_loss = nn.BCEWithLogitsLoss()
             loss_bce = bce_loss(pred, target)
             loss_dice = dice_loss(torch.sigmoid(pred), target, multiclass=False)
-            return combined_bce_weight * loss_bce + combined_dice_weight * loss_dice
-
+            return loss_bce + loss_dice
         return combined_loss
 
     else:
@@ -587,6 +589,7 @@ def train_model(
                 Val Loss:   {val_metrics['val_loss']:.4f}
                 Weighted CE: {val_metrics['val_weighted_ce']:.4f}
                 Dice:       {val_metrics['val_dice']:.4f}
+                BCE + Dice: {val_metrics['val_bce_dice']:.4f}
                 IoU:        {val_metrics['val_iou']:.4f}
                 Grad Norm:  {epoch_grad_norm:.4f}
                 Total Epoch Time (min): {total_epoch_time:.2f}
@@ -608,6 +611,7 @@ def train_model(
                 'val_weighted_ce': val_metrics['val_weighted_ce'],
                 'val_dice': val_metrics['val_dice'],
                 'val_iou': val_metrics['val_iou'],
+                'val_bce_dice': val_metrics['val_bce_dice'],
                 'grad_norm_epoch': epoch_grad_norm,
                 'train_time_min': train_epoch_time,
                 'val_time_min': val_epoch_time,
@@ -666,3 +670,5 @@ if __name__ == '__main__':
 #python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/foreback/processed
 
 #python train.py -e 30 -b 16 -ts 100 -vs 30 -d D:/Martin/thesis/data/processed/dataset_0228_final
+
+# python train.py -e 20 -b 16 -d D:/Martin/thesis/data/processed/dataset_0228_final --loss combined --combined-bce-weight 0.5 --combined-dice-weight 0.5  --optimizer rmsprop --scheduler plateau -l 1e-4

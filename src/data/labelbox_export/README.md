@@ -6,9 +6,9 @@ Quick Infos:
 - MBS Project ID: cl2t3p57f1b5y0764dutw9c2t
 
 Run command
-`python main.py -pi cl2t3p57f1b5y0764dutw9c2t -o D:\Martin\thesis\data\raw\labelbox_output_mbs_0226`
+`python main.py -pi cl2t3p57f1b5y0764dutw9c2t -o D:\Martin\thesis\data\raw\labelbox_output_mbs_0312`
 
-`python main.py -pi cm5qm2z0c0b8b07zgdc5f52jp -o D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0226`
+`python labelbox/main.py -pi cm5qm2z0c0b8b07zgdc5f52jp -o D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0313`
 
 
 
