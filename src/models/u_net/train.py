@@ -163,7 +163,7 @@ def get_args() -> argparse.Namespace:
 
     return args
 
-
+'''
 def get_augmentations() -> A.Compose:
     """
     Define data augmentations for the training dataset.
@@ -175,6 +175,61 @@ def get_augmentations() -> A.Compose:
         A.HorizontalFlip(p=0.5),
     ], additional_targets={'mask': 'mask'})
 
+problems:
+- too much affine transform
+'''
+
+
+# Define spatial transformations (applied to both image and mask)
+spatial_transform = A.ReplayCompose([
+    A.HorizontalFlip(p=0.5),
+    A.Rotate(limit=5, p=0.5, border_mode=0),
+    A.Affine(
+        scale=(0.95, 1.05),
+        translate_percent=(-0.05, 0.05),
+        shear=(-3, 3),
+        p=0.5,
+        border_mode=0
+    )
+], additional_targets={'mask': 'mask'})
+
+
+# Define intensity transformations (applied only to the image)
+intensity_transforms = A.Compose([
+    A.OneOf([
+        A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+        A.GaussianBlur(blur_limit=(3, 3), p=0.25)
+    ], p=0.3)
+])
+# Spatial transforms (applied to both image and mask)
+spatial_transforms = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.Rotate(limit=5, p=0.5, border_mode=0),  # using a lower rotation limit
+    A.Affine(
+        scale=(0.95, 1.05),
+        translate_percent=(-0.05, 0.05),  # lower translation limits
+        shear=(-3, 3),                  # lower shear
+        p=0.5,
+        border_mode=0                   # consider using cv2.BORDER_REFLECT_101 if desired
+    )
+], additional_targets={'mask': 'mask'})
+
+
+# Define the augmentation function at the module level
+def augment_fn(image, mask):
+    # Apply spatial transformations (both image and mask)
+    augmented = spatial_transforms(image=image[..., None], mask=mask[..., None])
+    image_aug = augmented['image'].squeeze(-1)
+    mask_aug = augmented['mask'].squeeze(-1)
+    # Apply intensity transformations only to the image
+    image_aug = intensity_transforms(image=image_aug[..., None])['image'].squeeze(-1)
+    return image_aug, mask_aug
+
+def get_augmentations():
+    """
+    Returns the augmentation function.
+    """
+    return augment_fn
 
 
 def prepare_datasets(args: argparse.Namespace) -> Tuple[BasicDataset, BasicDataset]:
@@ -385,6 +440,7 @@ def get_loss(loss_name: str, pos_weight: float = None,
     elif loss_name == 'combined':
         # Combined loss: weighted BCE (with optional pos_weight) plus Dice loss.
         # Capture pos_weight explicitly as a default parameter.
+        print(f"Used Loss: Combined (BCE weight: {combined_bce_weight}, Dice weight: {combined_dice_weight}, pos_weight: {pos_weight})")
         def combined_loss(pred, target, pos_weight=pos_weight):
             if pos_weight is not None:
                 pos_weight_tensor = torch.tensor([pos_weight], device=pred.device)

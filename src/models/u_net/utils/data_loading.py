@@ -80,37 +80,47 @@ class BasicDataset(Dataset):
         return len(self.ids)
 
     def __getitem__(self, idx):
+        mask = load_image(self.mask_paths[idx], is_grayscale=True)
+        img = load_image(self.img_paths[idx], is_grayscale=True)
+
+        if self.transform is not None:
+            augmented = self.transform(image=img, mask=mask)
+            img = augmented['image']
+            mask = augmented['mask']
+            replay = augmented.get('replay', None)
+            print(f"Replay info for sample {idx}: {replay}")
+
+        img = self.preprocess(img, is_mask=False)
+        mask = self.preprocess(mask, is_mask=True, mask_values=self.mask_values)
+
+        img_tensor = torch.from_numpy(img).unsqueeze(0)
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0)
+        return {'image': img_tensor.float(), 'mask': mask_tensor.float()}
+
+
+    def __getitem__(self, idx):
         mask_path = self.mask_paths[idx]
         img_path = self.img_paths[idx]
         mask = load_image(mask_path, is_grayscale=True)  # shape (H, W)
         img = load_image(img_path, is_grayscale=True)
 
-        # If self.transform is Albumentations, you can pass them as (H, W) with 'mask'
-        # But note: Albumentations expects (H, W, C). So you'd do:
-        if self.transform is not None:
-            augmented = self.transform(
-                image=img[..., None],  # shape (H,W,1)
-                mask=mask[..., None]
-            )
-            img = augmented['image'].squeeze(-1)  # back to (H, W)
-            mask = augmented['mask'].squeeze(-1)
-
+        # apply preprocess -> normalize
         img = self.preprocess(img, is_mask=False)
         mask = self.preprocess(mask, is_mask=True, mask_values=self.mask_values)
 
-        # Verify masks are binary
-        if len(self.mask_values) == 2:
-            unique_vals = np.unique(mask)
-            #assert np.array_equal(unique_vals,
-            #[0., 1.]), f"Mask values after preprocessing are {unique_vals}, expected [0., 1.]"
+        # apply augmentations
+        if self.transform is not None:
+            # Apply augmentations
+            img, mask = self.transform(image=img, mask=mask)
 
-        # Now shape is (H, W).
+        # make sure the values are between 0 and 1 for mask and image
+        if img.max() > 1 or img.max() < 0.1:
+            raise ValueError(f"Image max value is {img.max()} and mask min value is {mask.min()}")
+
         img_tensor = torch.from_numpy(img).unsqueeze(0)  # (1, H, W)
         mask_tensor = torch.from_numpy(mask).unsqueeze(0)  # (1, H, W)
-        return {
-            'image': img_tensor.float(),
-            'mask': mask_tensor.float()
-        }
+        return {'image': img_tensor.float(), 'mask': mask_tensor.float()}
+
 
 
     @staticmethod
