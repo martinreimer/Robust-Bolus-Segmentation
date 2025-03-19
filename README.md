@@ -34,3 +34,9 @@ This repository contains the code and data for my Master's thesis project titled
 - labelbox-export
 - -PyTorch U-Net https://github.com/milesial/Pytorch-UNet
 - https://github.com/neuluna/bolus_segmentation foreback detection
+
+# Setup
+```bash
+pip install pandas numpy scikit-learn torch tqdm wandb albumentations opencv-python matplotlib  nvitop
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```

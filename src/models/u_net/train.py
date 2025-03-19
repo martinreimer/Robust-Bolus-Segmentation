@@ -32,25 +32,26 @@ warnings.filterwarnings("ignore")
 
 
 @contextmanager
-def wandb_run(project: str, config: dict):
+def wandb_run(project: str, config: dict, output_dir: str):
     """
     Context manager for managing WandB runs.
-
-    Args:
-        project (str): The name of the WandB project.
-        config (dict): Configuration dictionary to log.
-
-    Yields:
-        wandb.Run: The initialized WandB run object.
     """
-    experiment = wandb.init(project=project, config=config, resume='allow', anonymous='must')
+    experiment = wandb.init(
+        project=project,
+        config=config,
+        resume='allow',
+        anonymous='must',
+        dir=output_dir
+    )
     try:
+        print(f"WandB {experiment.project} - {experiment.name}")
         yield experiment
     finally:
         wandb.finish()
 
 
-def setup_logging(log_level: str = 'INFO', log_file: str = 'training.log') -> None:
+
+def setup_logging(log_level: str = 'INFO', log_file: str = 'training.log', output_dir: str = 'D:/Martin/thesis/training_runs') -> None:
     """
     Set up logging configuration.
 
@@ -61,6 +62,10 @@ def setup_logging(log_level: str = 'INFO', log_file: str = 'training.log') -> No
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
+
+    # Construct the full path for the log file in output_dir
+    log_file = Path(output_dir) / 'training.log'
+
     logging.basicConfig(
         level=numeric_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -132,6 +137,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--lr-mode', type=str, default='min', choices=['min', 'max'],
                         help='Mode for ReduceLROnPlateau scheduler; typically "min" for loss')
 
+    # unet stuff
+    parser.add_argument('--filters', type=str, default='64,128,256,512,1024',
+                        help='Comma-separated list of filter sizes for U-Net layers (e.g., 32,64,128,256)')
     # Dataset options
     parser.add_argument('--train-samples', '-ts', type=int, default=None,
                         help='Maximum number of training samples to use. If not set, use all.')
@@ -151,6 +159,14 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint',
                         help='Do not save checkpoints after each epoch')
 
+    # Output directory
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='D:/Martin/thesis/training_runs',
+        help='Directory to store all outputs (runs, checkpoints, logs, etc.). '
+             'Default is "D:/Martin/thesis/training_runs".'
+    )
     args = parser.parse_args()
 
     # Validate arguments
@@ -160,38 +176,14 @@ def get_args() -> argparse.Namespace:
         parser.error("--val-samples must be a positive integer.")
     if not (0 <= args.val <= 100):
         parser.error("--validation must be between 0 and 100.")
-
+        # Convert the filters string to a list of integers
+    try:
+        args.filters = [int(f) for f in args.filters.split(',')]
+    except ValueError:
+        parser.error(
+            "Invalid filter sizes. Please provide a comma-separated list of integers (e.g., 32,64,128,256)."
+        )
     return args
-
-'''
-def get_augmentations() -> A.Compose:
-    """
-    Define data augmentations for the training dataset.
-
-    Returns:
-        A.Compose: Composed augmentations.
-    """
-    return A.Compose([
-        A.HorizontalFlip(p=0.5),
-    ], additional_targets={'mask': 'mask'})
-
-problems:
-- too much affine transform
-'''
-
-
-# Define spatial transformations (applied to both image and mask)
-spatial_transform = A.ReplayCompose([
-    A.HorizontalFlip(p=0.5),
-    A.Rotate(limit=5, p=0.5, border_mode=0),
-    A.Affine(
-        scale=(0.95, 1.05),
-        translate_percent=(-0.05, 0.05),
-        shear=(-3, 3),
-        p=0.5,
-        border_mode=0
-    )
-], additional_targets={'mask': 'mask'})
 
 
 # Define intensity transformations (applied only to the image)
@@ -302,21 +294,22 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
     Returns:
         nn.Module: The UNet model.
     """
-    model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
+    model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last).to(device=device)
 
     logging.info(f'Network:\n'
                  f'\t{model.n_channels} input channels\n'
                  f'\t{model.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling')
+                 f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling\n'
+                 f'\tFilter sizes: {model.filters}')
 
-    # Load weights if requested
+    # Load weights if requested (unchanged)
     if args.load:
         load_model_weights(model, args.load, device)
 
     return model
 
-
+'''
 def load_model_weights(model: nn.Module, path: str, device: torch.device) -> None:
     """
     Load model weights from a checkpoint file.
@@ -334,7 +327,7 @@ def load_model_weights(model: nn.Module, path: str, device: torch.device) -> Non
         del state_dict['mask_values']
     model.load_state_dict(state_dict)
     logging.info(f'Model loaded from {path}')
-
+'''
 
 def log_train_augment_preview(dataset: BasicDataset, fixed_indices: list, epoch: int, experiment,
                               count: int = 3) -> None:
@@ -564,7 +557,7 @@ def log_validation_samples(model: nn.Module, loader: DataLoader, device: torch.d
                 })
                 sample_count += 1
 
-
+'''
 def save_final_model(model: nn.Module, args: argparse.Namespace) -> None:
     """
     Save the final trained model to the checkpoints directory.
@@ -579,7 +572,7 @@ def save_final_model(model: nn.Module, args: argparse.Namespace) -> None:
     final_model_path = checkpoints_dir / 'model.pth'
     torch.save(model.state_dict(), final_model_path)
     logging.info(f'Final model saved to {final_model_path}')
-
+'''
 
 
 
@@ -591,14 +584,16 @@ def train_model(
         args: argparse.Namespace
 ) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path("./runs") / f"run-{timestamp}"
-    checkpoints_dir = run_dir / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Checkpoints and final model will be saved to: {checkpoints_dir}")
-
     pos_weight = compute_imbalance_pos_weight(train_loader.dataset)
 
-    with wandb_run(project='U-Net', config=vars(args)) as experiment:
+    with wandb_run(project='U-Net', config=vars(args), output_dir=args.output_dir) as experiment:
+        #set up
+        project_name = experiment.project
+        run_name = experiment.name
+        run_dir = Path(args.output_dir) / project_name / "runs" / f"{run_name}"
+        checkpoints_dir = run_dir / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Checkpoints and final model will be saved to: {checkpoints_dir}")
         n_train = len(train_loader.dataset)
         n_val = len(val_loader.dataset)
         logging.info(f'''Starting training:
@@ -701,7 +696,7 @@ def main():
     Main function to orchestrate the training process.
     """
     args = get_args()
-    setup_logging()
+    setup_logging(output_dir=args.output_dir)
     device = get_device()
     train_set, val_set = prepare_datasets(args)
     train_loader, val_loader = create_dataloaders(train_set, val_set, args.batch_size)
@@ -722,9 +717,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-#python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/processed/dataset_first_experiments
-#python train.py -e 10 -b 32 -ts 80 -vs 30 -d ../../../data/foreback/processed
-
-#python train.py -e 30 -b 16 -ts 100 -vs 30 -d D:/Martin/thesis/data/processed/dataset_0228_final
-
-# python train.py -e 20 -b 16 -d D:/Martin/thesis/data/processed/dataset_0228_final --loss combined --combined-bce-weight 0.5 --combined-dice-weight 0.5  --optimizer rmsprop --scheduler plateau -l 1e-4

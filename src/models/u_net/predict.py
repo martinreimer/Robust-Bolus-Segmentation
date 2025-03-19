@@ -1,5 +1,16 @@
 """
-python .\predict.py --run-name run-20250308_211056 --model-file checkpoint_epoch15.pth --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/test/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v --gif-fps 5 -t 0.8 --no-save
+eternal-silence-136
+python predict.py --test-name eternal-silence-136 --model-path D:/Martin/thesis/training_runs/U-Net/runs/eternal-silence-136/checkpoints/checkpoint_epoch19.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/test/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v --gif-fps 5 -t 0.8 --no-save
+
+
+python .\predict.py --test-name dry-fire-92-0_8 --model-path D:\Martin\thesis\model_backup\run-20250308_211056\checkpoints\checkpoint_epoch14.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/test/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v --gif-fps 5 -t 0.8 --no-save
+
+python predict.py \
+    --model-path "D:/Martin/thesis/runs/run-20250308_211056/checkpoints/checkpoint_epoch15.pth" \
+    --data-dir "D:/Martin/thesis/data/processed/dataset_0228_final/test/" \
+    --csv-path "D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv" \
+    --output-dir "D:/Martin/thesis/output" \
+    -v --gif-fps 5 -t 0.8 --no-save
 -> only tested for test with ground truth
 
 Predict segmentation masks using a pre-trained UNet model.
@@ -174,11 +185,6 @@ def create_triple_plot(original_img, overlay_gt_img, overlay_pred_img, title_tex
     buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
     plt.close(fig)
     return Image.fromarray(buf)
-
-
-import matplotlib.gridspec as gridspec
-
-import matplotlib.gridspec as gridspec
 
 
 def create_triple_plot_with_dice(original_img, overlay_gt_img, overlay_pred_img, title_text=None, dice_scores=None,
@@ -371,15 +377,32 @@ def create_gif(frames_list, output_path, fps=2):
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
-    parser.add_argument('--run-name', type=str, default=None,
-                        help='Name of a specific run directory in "runs/". If not specified, the newest run is used.')
-    parser.add_argument('--runs-root', type=str, default='runs',
-                        help='Parent directory containing run subdirs (default="runs").')
-    parser.add_argument('--model-file', type=str, default='model.pth',
-                        help='Name of the model file in the run directory (default="model.pth").')
+
+    parser.add_argument(
+        '--test-name',
+        type=str,
+        default='wanb-name-params',
+        help='Full path to the model checkpoint file.'
+    )
+
+    parser.add_argument(
+        '--model-path',
+        type=str,
+        default='../../../data/processed/my_default_model.pth',
+        help='Full path to the model checkpoint file.'
+    )
+
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='output',
+        help='Directory where predicted masks, figures, and GIFs will be saved.'
+    )
+
     parser.add_argument('--data-dir', type=str,
                         default='../../../data/processed/dataset_first_experiments/test',
                         help='Super directory containing "imgs" and optionally "masks" subfolders.')
+
     parser.add_argument('--no-save', '-n', action='store_true',
                         help='Do not save the raw output masks.')
     parser.add_argument('--viz', '-v', action='store_true',
@@ -408,31 +431,28 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     # Determine the run directory
-    run_dir = find_runs_dir(run_name=args.run_name, runs_root=args.runs_root)
-    if run_dir is None:
-        raise FileNotFoundError("[main] No valid run directory found. "
-                                "Either specify --run-name or ensure runs/ is not empty.")
-
-    # Construct path to the model file
-    model_path = run_dir / "checkpoints" / args.model_file
+    model_path = Path(args.model_path)
     if not model_path.is_file():
         raise FileNotFoundError(f"[main] Model file {model_path} does not exist!")
 
     # Create timestamped output folder and subfolders
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    run_output_dir = Path('output') / timestamp
+    run_output_dir = Path(args.output_dir) / args.test_name
     run_output_dir.mkdir(parents=True, exist_ok=True)
+
     raw_output_dir = run_output_dir / 'raw'
     raw_output_dir.mkdir(parents=True, exist_ok=True)
+
     viz_pred_dir = run_output_dir / 'viz_pred'
     viz_pred_dir.mkdir(parents=True, exist_ok=True)
+
     video_gif_dir = run_output_dir / 'video_gifs'
     video_gif_dir.mkdir(parents=True, exist_ok=True)
+
     info_file = run_output_dir / "run_info.txt"
     with open(info_file, 'w') as f:
         f.write(f"Model used: {model_path}\n")
         f.write(f"Data directory: {args.data_dir}\n")
-        f.write(f"Date/Time: {timestamp}\n")
+        f.write(f"test folder name: {args.test_name}\n")
     logging.info(f"Wrote run information to: {info_file}")
 
     # Build the UNet
@@ -547,6 +567,10 @@ def main():
                 double_img.save(viz_pred_dir / f"{img_path.stem}_double.png")
 
     else:
+        # Global accumulators for per-video mean metrics.
+        global_dice_video_means = []
+        global_bce_video_means = []
+
         for video_name, group in grouped:
             logging.info(f"Processing video: {video_name} with {len(group)} frames.")
             group = group.sort_values("new_frame_name")
@@ -556,11 +580,10 @@ def main():
             threshold_info = f"Threshold: {args.mask_thresholds[0]}"
             fps_info = f"FPS: {args.gif_fps}"
             print(f"Processing video: {video_name} with {total_frames} frames.")
-            # Before processing the video, initialize an empty list to store dice scores.
-            # Before processing the video, initialize lists to store per-frame metrics.
+
+            # Initialize lists to store per-frame metrics.
             dice_scores_list = []
             bce_losses_list = []
-            total_frames = len(group)  # Fixed total number of frames for the video
 
             for idx, (_, row) in enumerate(group.iterrows(), start=1):
                 frame_idx = row["new_frame_name"]
@@ -572,17 +595,16 @@ def main():
 
                 original_img, overlay_pred, overlay_gt, dice_score, bce_loss = process_single_image(img_path)
 
-                # Append current metrics (use 0 if value is None).
+                # Append current metrics (using 0 if value is None).
                 dice_scores_list.append(dice_score if dice_score is not None else 0)
                 bce_losses_list.append(bce_loss if bce_loss is not None else 0)
 
                 # Build title text that now includes both metrics.
-                video_info = f"Video: {video_name.replace('.mp4', '')}"
-                threshold_info = f"Threshold: {args.mask_thresholds[0]}"
-                fps_info = f"FPS: {args.gif_fps}"
                 # For display, show inverse Dice (1 - Dice) and BCE.
-                metrics_info = f"1-Dice: {dice_score:.2f} | BCE: {bce_loss:.2f}" if dice_score is not None and bce_loss is not None else ""
-                title_text = f"{video_info} | Frame: {idx}/{total_frames} | {threshold_info} | {fps_info} | {metrics_info}"
+                metrics_info = (f"1-Dice: {1 - dice_score:.2f} | BCE: {bce_loss:.2f}"
+                                if dice_score is not None and bce_loss is not None else "")
+                title_text = (f"{video_info} | Frame: {idx}/{total_frames} | {threshold_info} | "
+                              f"{fps_info} | {metrics_info}")
 
                 if has_gt and overlay_gt is not None:
                     frame_plot = create_triple_plot_with_metrics(
@@ -600,10 +622,46 @@ def main():
                     frame_plot.save(out_plot_path)
                 frames_for_gif.append(frame_plot)
 
-            # After processing all frames in this video, build the GIF
+            # After processing all frames for the video, compute statistics.
+            dice_array = np.array(dice_scores_list)
+            bce_array = np.array(bce_losses_list)
+
+            video_dice_mean = np.mean(dice_array)
+            video_dice_median = np.median(dice_array)
+            video_dice_25 = np.percentile(dice_array, 25)
+            video_dice_75 = np.percentile(dice_array, 75)
+            video_dice_min = np.min(dice_array)
+            video_dice_max = np.max(dice_array)
+
+            video_bce_mean = np.mean(bce_array)
+            video_bce_median = np.median(bce_array)
+            video_bce_25 = np.percentile(bce_array, 25)
+            video_bce_75 = np.percentile(bce_array, 75)
+            video_bce_min = np.min(bce_array)
+            video_bce_max = np.max(bce_array)
+
+            # Log the per-video statistics.
+            logging.info(f"Statistics for video {video_name.replace('.mp4', '')}:")
+            logging.info(f"  Dice - Mean: {video_dice_mean:.3f}, Median: {video_dice_median:.3f}, "
+                         f"25th: {video_dice_25:.3f}, 75th: {video_dice_75:.3f}, Min: {video_dice_min:.3f}, Max: {video_dice_max:.3f}")
+            logging.info(f"  BCE  - Mean: {video_bce_mean:.3f}, Median: {video_bce_median:.3f}, "
+                         f"25th: {video_bce_25:.3f}, 75th: {video_bce_75:.3f}, Min: {video_bce_min:.3f}, Max: {video_bce_max:.3f}")
+
+            # Append the video means to the global lists.
+            global_dice_video_means.append(video_dice_mean)
+            global_bce_video_means.append(video_bce_mean)
+
+            # After processing the current video, create the video GIF.
             if frames_for_gif:
                 gif_path = video_gif_dir / f"{video_name.replace('.mp4', '')}.gif"
                 create_gif(frames_for_gif, gif_path, fps=args.gif_fps)
+
+        # After processing all videos, compute and log overall averages.
+        if global_dice_video_means and global_bce_video_means:
+            overall_dice_mean = np.mean(global_dice_video_means)
+            overall_bce_mean = np.mean(global_bce_video_means)
+            logging.info(f"Overall average Dice (across videos): {overall_dice_mean:.3f}")
+            logging.info(f"Overall average BCE  (across videos): {overall_bce_mean:.3f}")
 
     logging.info("[main] All predictions complete!")
 

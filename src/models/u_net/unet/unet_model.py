@@ -1,48 +1,68 @@
-""" Full assembly of the parts to form the complete network """
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from .unet_parts import *
 
 
+# Updated UNet: Parameterized and flexible
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=True):
+    def __init__(self, n_channels, n_classes, filters=[64, 128, 256, 512, 1024], bilinear=True):
+        """
+        Args:
+            n_channels (int): Number of input channels
+            n_classes (int): Number of output classes
+            filters (list): List of filter sizes for each encoder level (e.g., [64, 128, 256, 512, 1024])
+            bilinear (bool): Use bilinear upsampling if True, else use transposed convolution
+        """
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
+        self.filters = filters
+        self.depth = len(filters) - 1  # Number of down/up steps
 
-        self.inc = (DoubleConv(n_channels, 64))
-        self.down1 = (Down(64, 128))
-        self.down2 = (Down(128, 256))
-        self.down3 = (Down(256, 512))
-        factor = 2 if bilinear else 1
-        self.down4 = (Down(512, 1024 // factor))
-        self.up1 = (Up(1024, 512 // factor, bilinear))
-        self.up2 = (Up(512, 256 // factor, bilinear))
-        self.up3 = (Up(256, 128 // factor, bilinear))
-        self.up4 = (Up(128, 64, bilinear))
-        self.outc = (OutConv(64, n_classes))
+        # Encoder
+        self.inc = DoubleConv(n_channels, filters[0])
+        self.downs = nn.ModuleList([Down(filters[i], filters[i+1]) for i in range(self.depth)])
+
+        # Bottleneck
+        self.bottleneck = DoubleConv(filters[-1], filters[-1])
+
+        # Decoder
+        self.ups = nn.ModuleList()
+        in_channels = filters[-1]  # Start with bottleneck channels
+        for i in range(self.depth):
+            skip_channels = filters[-i-2]  # Encoder feature channels
+            out_channels = skip_channels  # Match encoder level
+            self.ups.append(Up(in_channels, skip_channels, out_channels, bilinear))
+            in_channels = out_channels  # Next layer’s input is this layer’s output
+
+        self.outc = OutConv(filters[0], n_classes)
 
     def forward(self, x):
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
-        x5 = self.down4(x4)
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
+        # Encoder path
+        encoder_features = []
+        x = self.inc(x)
+        encoder_features.append(x)
+        for down in self.downs:
+            x = down(x)
+            encoder_features.append(x)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder path
+        for i, up in enumerate(self.ups):
+            skip = encoder_features[-i-2]  # Match with corresponding encoder feature
+            x = up(x, skip)
+
+        # Output
         logits = self.outc(x)
         return logits
 
     def use_checkpointing(self):
         self.inc = torch.utils.checkpoint(self.inc)
-        self.down1 = torch.utils.checkpoint(self.down1)
-        self.down2 = torch.utils.checkpoint(self.down2)
-        self.down3 = torch.utils.checkpoint(self.down3)
-        self.down4 = torch.utils.checkpoint(self.down4)
-        self.up1 = torch.utils.checkpoint(self.up1)
-        self.up2 = torch.utils.checkpoint(self.up2)
-        self.up3 = torch.utils.checkpoint(self.up3)
-        self.up4 = torch.utils.checkpoint(self.up4)
+        self.downs = nn.ModuleList([torch.utils.checkpoint(down) for down in self.downs])
+        self.bottleneck = torch.utils.checkpoint(self.bottleneck)
+        self.ups = nn.ModuleList([torch.utils.checkpoint(up) for up in self.ups])
         self.outc = torch.utils.checkpoint(self.outc)

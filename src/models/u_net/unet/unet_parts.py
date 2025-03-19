@@ -1,13 +1,10 @@
-""" Parts of the U-Net model """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+# Unchanged DoubleConv: Two Conv2d -> BN -> ReLU layers
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
-
     def __init__(self, in_channels, out_channels, mid_channels=None):
         super().__init__()
         if not mid_channels:
@@ -24,10 +21,9 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.double_conv(x)
 
-
+# Unchanged Down: MaxPool followed by DoubleConv
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
-
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
@@ -38,42 +34,37 @@ class Down(nn.Module):
     def forward(self, x):
         return self.maxpool_conv(x)
 
-
+# Updated Up: Explicitly handle in_channels, skip_channels, and out_channels
 class Up(nn.Module):
     """Upscaling then double conv"""
-
-    def __init__(self, in_channels, out_channels, bilinear=True):
+    def __init__(self, in_channels, skip_channels, out_channels, bilinear=True):
         super().__init__()
-
-        # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+            self.channel_reduction = nn.Conv2d(in_channels, skip_channels, kernel_size=1)
+            concat_channels = skip_channels + skip_channels  # After concatenation
+            self.conv = DoubleConv(concat_channels, out_channels)
         else:
-            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
+            self.up = nn.ConvTranspose2d(in_channels, skip_channels, kernel_size=2, stride=2)
+            concat_channels = skip_channels + skip_channels
+            self.conv = DoubleConv(concat_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
-        # input is CHW
-        # U-Net does not use padding in convolution layers, so after downsampling and upsampling, the feature maps may have slightly different spatial sizes due to edge effects
+        if hasattr(self, 'channel_reduction'):
+            x1 = self.channel_reduction(x1)
+        # Padding to match skip connection size
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
-        # If the feature map sizes don’t match perfectly, padding is applied to x1 symmetrically
         x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
                         diffY // 2, diffY - diffY // 2])
-        # if you have padding issues, see
-        # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
-        # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
-
-        # Concat encoder (x2) and upsampled decoder (x1) paths
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
-
+# Unchanged OutConv: Final 1x1 convolution
 class OutConv(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(OutConv, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
