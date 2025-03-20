@@ -37,6 +37,6 @@ This repository contains the code and data for my Master's thesis project titled
 
 # Setup
 ```bash
-pip install pandas numpy scikit-learn torch tqdm wandb albumentations opencv-python matplotlib  nvitop
+pip install pandas numpy scikit-learn torch tqdm wandb albumentations opencv-python matplotlib  nvitop moviepy
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```

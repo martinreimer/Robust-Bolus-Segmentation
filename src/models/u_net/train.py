@@ -557,25 +557,6 @@ def log_validation_samples(model: nn.Module, loader: DataLoader, device: torch.d
                 })
                 sample_count += 1
 
-'''
-def save_final_model(model: nn.Module, args: argparse.Namespace) -> None:
-    """
-    Save the final trained model to the checkpoints directory.
-
-    Args:
-        model (nn.Module): The trained model.
-        args (argparse.Namespace): Parsed command-line arguments.
-    """
-    run_dir = Path("./runs")
-    latest_run = sorted(run_dir.glob('run-*'), key=os.path.getmtime)[-1]
-    checkpoints_dir = latest_run / "checkpoints"
-    final_model_path = checkpoints_dir / 'model.pth'
-    torch.save(model.state_dict(), final_model_path)
-    logging.info(f'Final model saved to {final_model_path}')
-'''
-
-
-
 def train_model(
         model: nn.Module,
         device: torch.device,
@@ -676,9 +657,21 @@ def train_model(
 
             if args.save_checkpoint:
                 ckpt_path = checkpoints_dir / f'checkpoint_epoch{epoch}.pth'
-                torch.save(model.state_dict(), ckpt_path)
+                torch.save({
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'state_dict': model.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'scheduler_state': scheduler.state_dict() if scheduler is not None else None,
+                    'grad_scaler_state': grad_scaler.state_dict() if grad_scaler is not None else None,
+                    'config': {
+                        'n_channels': 1,
+                        'n_classes': 1,
+                        'filters': args.filters,
+                        'bilinear': args.bilinear,
+                    }
+                }, ckpt_path)
                 logging.info(f'Checkpoint {epoch} saved to {ckpt_path}')
-
             try:
                 log_train_augment_preview(train_loader.dataset, fixed_indices_to_track, epoch, experiment)
             except Exception as e:
