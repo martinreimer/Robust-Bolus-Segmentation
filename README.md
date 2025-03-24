@@ -1,6 +1,8 @@
 # Thesis Project: Exploring Robustness in Videofluoroscopy Bolus Segmentation
 
-This repository contains the code and data for my Master's thesis project titled **"Exploring Robustness in Videofluoroscopy Bolus Segmentation"**. The thesis focuses on segmenting the bolus in videofluoroscopy studies using advanced deep learning techniques. The project aims to develop robust models that can generalize across datasets from different sources while evaluating the impact of data quality and model configurations.
+This repository contains the code and data for my Master's thesis project titled **"Exploring Robustness in Videofluoroscopy Bolus Segmentation"**. The thesis focuses on segmenting the bolus in videofluoroscopy studies using advanced deep learning techniques. The project aims to develop robust models that can generalize across diverse data while evaluating the impact of data quality and model configurations.
+
+![groundtruth_example](https://github.com/user-attachments/assets/2709240a-5efb-469f-8d00-4354555ace1a)
 
 ---
 
@@ -25,15 +27,10 @@ This repository contains the code and data for my Master's thesis project titled
    - Experimenting with additional architectures to improve robustness and explainability.
    - Evaluating model performance on diverse datasets.
 
-### Key Files
-- `README.md`: Main repository description (this file).
-- `requirements.txt`: Python dependencies for running the project.
-
 
 ### Includes Code from External Repos:
 - labelbox-export
-- -PyTorch U-Net https://github.com/milesial/Pytorch-UNet
-- https://github.com/neuluna/bolus_segmentation foreback detection
+- PyTorch U-Net https://github.com/milesial/Pytorch-UNet
 
 # Setup
 ```bash
