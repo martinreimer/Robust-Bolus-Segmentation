@@ -1,0 +1,42 @@
+program: train.py
+entity: martinev-fau-erlangen-n-rnberg
+method: random
+metric:
+    goal: minimize
+    name: val-loss
+parameters:
+  optimizer:
+    value: rmsprop
+  learning-rate:
+    values: [1e-05, 1e-04, 5e-04, 1e-03]
+  scheduler:
+    values: [plateau, step, exponential]
+  lr-gamma:
+    values: [0.1, 0.5]
+  lr-step-size:
+    values: [5, 10]
+  lr-mode:
+    value: min
+  lr-patience:
+    value: 3
+  filters:
+    values: [ "64,128,256,512,1024", "64,128,256,512,1024,2048", "32,64,128,256,512", "128,256,512,1024,2048", "16,32,64,128,256" ]
+  dataset-path:
+    value: D:/Martin/thesis/data/processed/dataset_0228_final
+  epochs:
+    value: 40
+  batch-size:
+    value: 6
+  combined-bce-weight:
+      values: [1, 2, 3, 4]
+  combined-dice-weight:
+      value: 1
+  loss:
+      value: combined
+command:
+- C:\\Users\\ly37xoco\\PycharmProjects\\thesis\\.venv\\Scripts\\python.exe
+- ${program}
+- ${args}
+early_terminate:
+  type: hyperband
+  max_iter: 40

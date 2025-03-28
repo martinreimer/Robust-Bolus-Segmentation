@@ -79,24 +79,6 @@ class BasicDataset(Dataset):
     def __len__(self):
         return len(self.ids)
 
-    def __getitem__(self, idx):
-        mask = load_image(self.mask_paths[idx], is_grayscale=True)
-        img = load_image(self.img_paths[idx], is_grayscale=True)
-
-        if self.transform is not None:
-            augmented = self.transform(image=img, mask=mask)
-            img = augmented['image']
-            mask = augmented['mask']
-            replay = augmented.get('replay', None)
-            print(f"Replay info for sample {idx}: {replay}")
-
-        img = self.preprocess(img, is_mask=False)
-        mask = self.preprocess(mask, is_mask=True, mask_values=self.mask_values)
-
-        img_tensor = torch.from_numpy(img).unsqueeze(0)
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0)
-        return {'image': img_tensor.float(), 'mask': mask_tensor.float()}
-
 
     def __getitem__(self, idx):
         mask_path = self.mask_paths[idx]
@@ -104,10 +86,14 @@ class BasicDataset(Dataset):
         mask = load_image(mask_path, is_grayscale=True)  # shape (H, W)
         img = load_image(img_path, is_grayscale=True)
 
+
+        # convert mask values to 0 or 255, if value > 0, set it to 255
+        mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+
         # apply preprocess -> normalize
         img = self.preprocess(img, is_mask=False)
-        mask = self.preprocess(mask, is_mask=True, mask_values=self.mask_values)
-
+        mask = self.preprocess(mask, is_mask=True)
+        #print(f"Mask values after preprocessing: {np.unique(mask)}")
         # apply augmentations
         if self.transform is not None:
             # Apply augmentations
@@ -118,13 +104,15 @@ class BasicDataset(Dataset):
             raise ValueError(f"Image max value is {img.max()} and mask min value is {mask.min()}")
 
         img_tensor = torch.from_numpy(img).unsqueeze(0)  # (1, H, W)
+
         mask_tensor = torch.from_numpy(mask).unsqueeze(0)  # (1, H, W)
+
         return {'image': img_tensor.float(), 'mask': mask_tensor.float()}
 
 
 
     @staticmethod
-    def preprocess(img, is_mask=False, mask_values=None):
+    def preprocess(img, is_mask=False):
         """
         Preprocess images and masks: Normalize
         """
@@ -135,11 +123,16 @@ class BasicDataset(Dataset):
 
         if is_mask:
             # Example: if masks are 0/255, convert to 0/1
-            if len(mask_values) == 2 and 0 in mask_values and 255 in mask_values:
-                img = (img > 127).astype(np.float32)
+           # get unique values of mask
+            mask_values = np.unique(img)
+            #print(mask_values)
+            if 0 in mask_values and 255 in mask_values:
+                img = (img / 255.0).astype(np.float32)#img = (img > 0).astype(np.float32)
+
         else:
             # For grayscale images, normalize to [0,1]
             img = img / 255.0
+
 
         return img
 

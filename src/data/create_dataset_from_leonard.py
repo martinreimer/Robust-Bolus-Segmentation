@@ -21,6 +21,7 @@ from tqdm import tqdm
 import numpy as np
 from types import SimpleNamespace  # Importing SimpleNamespace from types module
 
+'''
 def find_mask_files(directory, mask_extension=".mask"):
     """
     Traverses the specified directory and finds all files ending with the given mask_extension.

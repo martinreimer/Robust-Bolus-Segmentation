@@ -1,3 +1,18 @@
+
+
+
+
+
+WANDB - Sweeps:
+
+set up sweep with config
+wandb sweep .\sweep_config.yaml --project U-Net 
+-> read sweep id and copy paste it in next cmd
+
+
+ wandb agent -e martinev-fau-erlangen-n-rnberg -p U-Net f7zykoee
+
+
 # U-Net: Semantic segmentation with PyTorch
 Source: milesial\Pytorch-UNet
 

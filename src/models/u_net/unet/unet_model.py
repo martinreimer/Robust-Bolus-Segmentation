@@ -6,7 +6,7 @@ from .unet_parts import *
 
 # Updated UNet: Parameterized and flexible
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, filters=[64, 128, 256, 512, 1024], bilinear=True):
+    def __init__(self, n_channels, n_classes, filters=[64, 128, 256, 512, 1024], bilinear=True, use_attention=False):
         """
         Args:
             n_channels (int): Number of input channels
@@ -34,7 +34,7 @@ class UNet(nn.Module):
         for i in range(self.depth):
             skip_channels = filters[-i-2]  # Encoder feature channels
             out_channels = skip_channels  # Match encoder level
-            self.ups.append(Up(in_channels, skip_channels, out_channels, bilinear))
+            self.ups.append(Up(in_channels, skip_channels, out_channels, bilinear, use_attention))
             in_channels = out_channels  # Next layer’s input is this layer’s output
 
         self.outc = OutConv(filters[0], n_classes)

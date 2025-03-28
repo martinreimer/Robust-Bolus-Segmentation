@@ -52,8 +52,8 @@ def parse_arguments():
         description="Create train/val/test splits for datasets with or without data_overview.csv.")
     parser.add_argument('--input_dirs', '-i', nargs='+', required=True, help="Paths to input dataset directories.")
     parser.add_argument('--output_dir', '-o', required=True, help="Output directory for train/val/test splits.")
-    parser.add_argument('--test_size', '-t', type=float, default=0.2, help="Fraction for the test set (default: 0.2).")
-    parser.add_argument('--val_size', '-v', type=float, default=0.1,
+    parser.add_argument('--test_size', '-t', type=float, default=0.15, help="Fraction for the test set (default: 0.2).")
+    parser.add_argument('--val_size', '-v', type=float, default=0.15,
                         help="Fraction for the validation set (default: 0.1).")
     parser.add_argument('--random_seed', '-s', type=int, default=42, help="Seed for random operations (default: 42).")
     return parser.parse_args()

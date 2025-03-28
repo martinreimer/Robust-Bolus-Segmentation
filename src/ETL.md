@@ -59,8 +59,8 @@ python preprocess_labelbox_export.py \
   --curation_csv "D:\Martin\thesis\data\video_notes.csv" \
   --output_dataset_dir "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded"
 
-python preprocess_labelbox_export.py --original_dataset_dir "D:\Martin\thesis\data\raw\labelbox_output_mbss_martin" --curation_csv "D:\Martin\thesis\data\video_notes.csv" --output_dataset_dir "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded" --verbose
-python preprocess_labelbox_export.py --original_dataset_dir "D:\Martin\thesis\data\raw\labelbox_output_mbs" --curation_csv "D:\Martin\thesis\data\video_notes.csv" --output_dataset_dir "D:\Martin\thesis\data\processed\labelbox_output_mbs_frames_excluded" --verbose
+python preprocess_labelbox_export.py --project_source MBSS_Martin --original_dataset_dir D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0328 --video_notes_csv D:\Martin\thesis\data\video_notes.csv --output_dataset_dir D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded
+python preprocess_labelbox_export.py --project_source MBS_Luisa --original_dataset_dir D:\Martin\thesis\data\raw\labelbox_output_mbs_0328 --video_notes_csv D:\Martin\thesis\data\video_notes.csv --output_dataset_dir D:\Martin\thesis\data\processed\labelbox_output_mbs_0328_frames_excluded
 
 ```
 
@@ -69,11 +69,11 @@ Merge two or more processed exports into a single dataset:
 
 ```bash
 python create_dataset_from_labelbox_exports.py \
-  --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbs" \
+  --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded" \
                "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded" \
   --output_path "D:\Martin\thesis\data\processed\dataset_labelbox_export"
   
-python create_dataset_from_labelboxexports.py --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded" "D:\Martin\thesis\data\processed\labelbox_output_mbs_frames_excluded" --output_path "D:\Martin\thesis\data\processed\labelbox_dataset"
+python create_dataset_from_labelboxexports.py --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded" "D:\Martin\thesis\data\processed\labelbox_output_mbs_0328_frames_excluded" --output_path "D:\Martin\thesis\data\processed\labelbox_dataset_0328"
 ```
 
 ### 4. Mask Sanitizer (Optional)
@@ -81,7 +81,7 @@ Check and optionally fix mask images for consistency:
 
 ```bash
 # Just inspect:
-python mask_sanitizer.py -p D:\Martin\thesis\data\processed\dataset_0227\masks
+python mask_sanitizer.py -p D:\Martin\thesis\data\processed\labelbox_dataset_0328\masks
 
 # Fix any issues:
 python mask_sanitizer.py -p D:\Martin\thesis\data\processed\dataset_labelbox_export\masks -fix
@@ -98,7 +98,7 @@ python resize_images.py \
   -m pad_resize \
   --in_place
   
-python resize_images.py -p D:\Martin\thesis\data\processed\labelbox_dataset --folders imgs masks -size 512 -m pad_resize --in_place
+python resize_images.py -p D:\Martin\thesis\data\processed\labelbox_dataset_0328 --folders imgs masks -size 512 -m pad_resize --in_place
 
 ```
 
@@ -111,7 +111,7 @@ python visualize_dataset.py \
   -n 20 \
   --mask_suffix _bolus
  
-python visualize_dataset.py -p D:\Martin\thesis\data\processed\dataset_0227 -n 20 --mask_suffix _bolus
+python visualize_dataset.py -p D:\Martin\thesis\data\processed\labelbox_dataset_0328 -n 200 --mask_suffix _bolus
 python visualize_dataset.py -p D:\Martin\thesis\data\raw\labelbox_output_mbss_martin -n 1000 --mask_suffix _bolus
 python visualize_dataset.py -p D:\Martin\thesis\data\raw\labelbox_output_mbs -n 1000 --mask_suffix _bolus
 
@@ -125,5 +125,5 @@ python create_train_test_split.py \
   --input_dirs "D:\Martin\thesis\data\processed\dataset_labelbox_export" \
   --output_dir "D:\Martin\thesis\data\processed\dataset_train_val_test_split"
 
-python create_train_test_split.py --input_dirs "D:\Martin\thesis\data\processed\labelbox_dataset" --output_dir "D:\Martin\thesis\data\processed\dataset_0228_final"
+python create_train_test_split.py --input_dirs "D:\Martin\thesis\data\processed\labelbox_dataset_0328" --output_dir "D:\Martin\thesis\data\processed\dataset_0328_final"
 ```

@@ -1,3 +1,8 @@
+'''
+python train.py --epochs 40 -b 8 -l 1e-5 --loss combined -d D:\Martin\thesis\data\processed\dataset_0228_final
+
+'''
+
 import argparse
 import logging
 import os
@@ -104,7 +109,7 @@ def get_args() -> argparse.Namespace:
 
     # Training parameters
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=16,
+    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=8,
                         help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
@@ -147,13 +152,41 @@ def get_args() -> argparse.Namespace:
                         help='Maximum number of validation samples to use. If not set, use all.')
     parser.add_argument('--dataset-path', '-d', type=str, default='.',
                         help='Path to the dataset. Defaults to current directory.')
-    parser.add_argument('--mask-suffix', '-ms', type=str, default='_bolus',
+    parser.add_argument('--mask-suffix', '-ms', type=str, default='',
                         help='Suffix for mask files. Defaults to "_bolus".')
 
     # Optimizer options
     parser.add_argument('--optimizer', type=str, default='rmsprop',
                         choices=['adam', 'nadam', 'rmsprop', 'sgd', 'adadelta', 'adagrad', 'adamax'],
                         help='Optimizer to use. Options: "adam", "nadam", "rmsprop", "sgd", "adadelta", "adagrad", "adamax"')
+
+    # Optimizer hyperparameters for SGD
+    parser.add_argument('--sgd-momentum', type=float, default=0.9,
+                        help='Momentum for SGD optimizer (default: 0.9)')
+    parser.add_argument('--sgd-nesterov', dest='sgd_nesterov', action='store_true',
+                        help='Enable Nesterov momentum for SGD')
+    parser.add_argument('--no-sgd-nesterov', dest='sgd_nesterov', action='store_false',
+                        help='Disable Nesterov momentum for SGD')
+    parser.set_defaults(sgd_nesterov=True)
+
+    # Optimizer hyperparameters for Adam/NAdam
+    parser.add_argument('--adam-beta1', type=float, default=0.9,
+                        help='Beta1 for Adam/NAdam optimizer (default: 0.9)')
+    parser.add_argument('--adam-beta2', type=float, default=0.999,
+                        help='Beta2 for Adam/NAdam optimizer (default: 0.999)')
+    parser.add_argument('--adam-eps', type=float, default=1e-8,
+                        help='Epsilon for Adam/Nadam optimizer (default: 1e-8)')
+    parser.add_argument('--adam-weight-decay', type=float, default=0,
+                        help='Weight decay for Adam/NAdam optimizer (default: 0)')
+
+    # Optimizer hyperparameters for RMSprop
+    parser.add_argument('--rmsprop-momentum', type=float, default=0.9,
+                        help='Momentum for RMSprop optimizer (default: 0.9)')
+    parser.add_argument('--rmsprop-weight-decay', type=float, default=1e-8,
+                        help='Weight decay for RMSprop optimizer (default: 1e-8)')
+
+    # Attention Gates
+    parser.add_argument('--use-attention', action='store_true', default=False, help='Use attention gates in U-Net')
 
     # Checkpoint options
     parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint',
@@ -205,6 +238,8 @@ spatial_transforms = A.Compose([
         border_mode=0                   # consider using cv2.BORDER_REFLECT_101 if desired
     )
 ], additional_targets={'mask': 'mask'})
+
+
 
 
 # Define the augmentation function at the module level
@@ -294,7 +329,7 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
     Returns:
         nn.Module: The UNet model.
     """
-    model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear)
+    model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear, use_attention=args.use_attention)
     model = model.to(memory_format=torch.channels_last).to(device=device)
 
     logging.info(f'Network:\n'
@@ -308,26 +343,6 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
         load_model_weights(model, args.load, device)
 
     return model
-
-'''
-def load_model_weights(model: nn.Module, path: str, device: torch.device) -> None:
-    """
-    Load model weights from a checkpoint file.
-
-    Args:
-        model (nn.Module): The model to load weights into.
-        path (str): Path to the checkpoint file.
-        device (torch.device): Device to map the weights to.
-    """
-    if not os.path.exists(path):
-        logging.error(f'Checkpoint file {path} does not exist.')
-        raise FileNotFoundError(f'Checkpoint file {path} not found.')
-    state_dict = torch.load(path, map_location=device)
-    if 'mask_values' in state_dict:
-        del state_dict['mask_values']
-    model.load_state_dict(state_dict)
-    logging.info(f'Model loaded from {path}')
-'''
 
 def log_train_augment_preview(dataset: BasicDataset, fixed_indices: list, epoch: int, experiment,
                               count: int = 3) -> None:
@@ -669,7 +684,9 @@ def train_model(
                         'n_classes': 1,
                         'filters': args.filters,
                         'bilinear': args.bilinear,
-                    }
+                        'use_attention': args.use_attention,
+                    },
+                    'mask_values': [0, 1],
                 }, ckpt_path)
                 logging.info(f'Checkpoint {epoch} saved to {ckpt_path}')
             try:
@@ -694,7 +711,7 @@ def main():
     train_set, val_set = prepare_datasets(args)
     train_loader, val_loader = create_dataloaders(train_set, val_set, args.batch_size)
     model = build_model(args, device)
-
+    #print(f"Model:\n{model}")
     try:
         train_model(model, device, train_loader, val_loader, args)
     except torch.cuda.OutOfMemoryError:

@@ -1,10 +1,16 @@
 """
 Example:
+    python predict.py --test-name fresh-elevator-125 --model-path D:/Martin/thesis/training_runs/U-Net/runs/fresh-elevator-125/checkpoints/checkpoint_epoch18.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --fps 10 --dataset-split train --plot-metrics
+
+
+
+
+
 Prediction w/ groud truth + save as mp4s + plot metrics also + save metrics as csv -> triple plot
-python predict.py --test-name breezy-river-141 --model-path D:/Martin/thesis/training_runs/U-Net/runs/breezy-river-141/checkpoints/checkpoint_epoch25.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/test/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --plot-metrics --fps 10
+python predict.py --test-name smooth-voice-98 --model-path D:/Martin/thesis/training_runs/U-Net/runs/smooth-voice-98/checkpoints/checkpoint_epoch19.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --plot-metrics --fps 10 --dataset-split test
 
 Prediction w/ groud truth + save as mp4s + save metrics as csv -> double plot
-python predict.py --test-name breezy-river-141 --model-path D:/Martin/thesis/training_runs/U-Net/runs/breezy-river-141/checkpoints/checkpoint_epoch25.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/test/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --fps 10
+python predict.py --test-name dry-fire-92 --model-path D:/Martin/thesis/training_runs/U-Net/runs/eternal-silence/checkpoints/checkpoint_epoch20.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --fps 10 --dataset-split test
 
 
 This script performs segmentation predictions using a pre-trained UNet model.
@@ -52,17 +58,37 @@ from moviepy.editor import ImageSequenceClip
 # --------------------------
 # Helper Functions
 # --------------------------
+
 def load_model(model_path, channels, classes, bilinear):
-    logging.info("Building UNet...")
-    net = UNet(n_channels=channels, n_classes=classes, bilinear=bilinear)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f"Using device: {device}")
+    checkpoint = torch.load(model_path, map_location=device)
+    config = checkpoint['config']
+    net = UNet(**config)
+    net.load_state_dict(checkpoint['state_dict'])
     net.to(device=device)
-    state_dict = torch.load(model_path, map_location=device)
-    mask_values = state_dict.pop('mask_values', [0, 1])
-    net.load_state_dict(state_dict)
+    mask_values = checkpoint.pop('mask_values', [0, 1])
     logging.info("Model loaded successfully!")
     return net, device, mask_values
+'''
+
+
+def load_model(model_path, channels, classes, bilinear, use_attention=True):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    checkpoint = torch.load(model_path, map_location=device)
+
+    config = checkpoint.get('config', {})
+    config.setdefault('n_channels', channels)
+    config.setdefault('n_classes', classes)
+    config.setdefault('bilinear', bilinear)
+    config.setdefault('use_attention', use_attention)  # fallback value
+
+    net = UNet(**config)
+    net.load_state_dict(checkpoint['state_dict'])
+    net.to(device=device)
+    mask_values = checkpoint.pop('mask_values', [0, 1])
+    logging.info("Model loaded successfully!")
+    return net, device, mask_values
+'''
 
 def predict_img(net, full_img: Image.Image, device: torch.device, scale_factor=1.0, thresholds=[0.5]):
     net.eval()
@@ -352,6 +378,7 @@ def get_args():
     parser.add_argument('--data-dir', type=str, required=True, help='Directory containing "imgs" and optionally "masks".')
     parser.add_argument('--csv-path', type=str, default=None,
                         help='CSV mapping file with columns for video_name and frame information.')
+    parser.add_argument('--dataset-split', type=str, default=None, help='Parse Train / Val / Test Videos from Data_Overview.csv')
     parser.add_argument('--no-gt', action='store_true', help='If set, do not use ground truth.')
     parser.add_argument('--no-save', '-n', action='store_true', help='Do not save raw output masks.')
     parser.add_argument('--viz', '-v', action='store_true', help='Visualize images as they are processed.')
@@ -408,9 +435,12 @@ def main():
 
     # Load CSV if provided; otherwise process all images together
     if args.csv_path and Path(args.csv_path).is_file():
+        # if args.dataset_split not specified or not train val test, throw error
+        if args.dataset_split not in ['train', 'val', 'test']:
+            raise ValueError("dataset_split must be one of: train, val, test")
         logging.info(f"Reading CSV mapping: {args.csv_path}")
         df = pd.read_csv(args.csv_path)
-        df = df[df["split"] == "test"]
+        df = df[df["split"] == args.dataset_split]
         grouped = df.groupby("video_name")
     else:
         logging.info("No CSV mapping provided; processing all images together.")

@@ -15,6 +15,7 @@ from utils.data_loading import BasicDataset
 import albumentations as A
 import os
 import warnings
+import cv2
 warnings.filterwarnings("ignore", category=UserWarning)
 
 def parse_args():
@@ -90,15 +91,13 @@ def get_augmentations():
     spatial_transform = A.ReplayCompose([
         A.HorizontalFlip(p=0.5),
         A.Rotate(limit=10, p=0.5),
-        A.Affine(scale=(0.9, 1.1), translate_percent=(-0.1, 0.1), shear=(-7, 7), p=0.7)
+        A.Affine(scale=(0.9, 1.1), translate_percent=(-0.1, 0.1), shear=(-7, 7), p=0.7),
     ], additional_targets={'mask': 'mask'})
 
     # Intensity transforms (applied only to the image)
     intensity_transform = A.ReplayCompose([
-        A.OneOf([
-            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=1.0),
-            A.GaussianBlur(blur_limit=(3, 3), p=0.5)
-        ], p=0.3)
+        A.GaussianBlur(blur_limit=(3, 3), p=0.5),
+        A.Lambda(name="briiightnesse", image=lambda x, **kwargs: (x * 1.5).clip(0, 1).astype(x.dtype), p=1.0),
     ])
 
     def augment(image, mask):
