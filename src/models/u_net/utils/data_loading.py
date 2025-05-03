@@ -68,12 +68,14 @@ class BasicDataset(Dataset):
         logging.info(f'Creating {subset} dataset with {len(self.ids)} examples')
 
         # Collect unique mask values across all images
+        ''' save time
         with Pool() as p:
             unique_vals = list(tqdm(
                 p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
                 total=len(self.ids)
             ))
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique_vals))))
+        '''
+        self.mask_values = [0.0, 255.0] #list(sorted(np.unique(np.concatenate(unique_vals))))
         logging.info(f"Unique mask values: {self.mask_values}")
 
     def __len__(self):
@@ -118,7 +120,7 @@ class BasicDataset(Dataset):
         """
         h, w = img.shape
         # Resize
-        pil_img = Image.fromarray(img)  # shape (H, W)
+        pil_img = Image.fromarray(img)
         img = np.asarray(pil_img, dtype=np.float32)  # shape (newH, newW)
 
         if is_mask:

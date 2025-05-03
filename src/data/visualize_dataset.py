@@ -100,3 +100,6 @@ if __name__ == '__main__':
 
     process_images(args.path, img_folder=args.folders[0], mask_folder=args.folders[1], num_samples=args.num_samples,
                    mask_suffix=args.mask_suffix)
+    '''
+python visualize_dataset.py -p D:\Martin\thesis\data\processed\leonard_dataset_final\train -n 5000 --mask_suffix _bolus
+    '''

@@ -1,65 +1,73 @@
 """
-Example:
-    python predict.py --test-name fresh-elevator-125 --model-path D:/Martin/thesis/training_runs/U-Net/runs/fresh-elevator-125/checkpoints/checkpoint_epoch18.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --fps 10 --dataset-split train --plot-metrics
+Example CLI:
+    python predict.py \
+        --test-name winter-valley-234 \
+        --model-path /path/to/checkpoint_epoch11.pth \
+        --output-dir /path/to/output \
+        --data-dir /path/to/data/processed/val/ \
+        --csv-path /path/to/data_overview.csv \
+        -v \
+        -t 0.8 \
+        --save-metrics-csv \
+        --save-video-mp4s \
+        --fps 10 \
+        --dataset-split train \
+        --plot-metrics
 
+Description:
+    This script loads a pre-trained U-Net model from segmentation-models-pytorch (SMP),
+    performs segmentation on grayscale images, and produces:
+      - Raw binary masks (PNG)
+      - Overlay visualizations per frame
+      - GIF and MP4 videos
+      - Dice & BCE metrics (CSV and TXT)
 
+Features:
+    - Single-channel (grayscale) input only
+    - Optional ground-truth (--no-gt)
+    - CSV-driven frame grouping for videos (--csv-path)
+    - Frame-by-frame or grouped processing
+    - Metrics plotting (--plot-metrics)
 
+Requirements:
+    - segmentation-models-pytorch
+    - torch, torchvision
+    - moviepy, imageio
+    - matplotlib, pandas, PIL
 
-
-Prediction w/ groud truth + save as mp4s + plot metrics also + save metrics as csv -> triple plot
-python predict.py --test-name smooth-voice-98 --model-path D:/Martin/thesis/training_runs/U-Net/runs/smooth-voice-98/checkpoints/checkpoint_epoch19.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --plot-metrics --fps 10 --dataset-split test
-
-Prediction w/ groud truth + save as mp4s + save metrics as csv -> double plot
-python predict.py --test-name dry-fire-92 --model-path D:/Martin/thesis/training_runs/U-Net/runs/eternal-silence/checkpoints/checkpoint_epoch20.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_0228_final/train/ --csv-path D:/Martin/thesis/data/processed/dataset_0228_final/data_overview.csv -v -t 0.8 --save-metrics-csv --save-video-mp4s --fps 10 --dataset-split test
-
-
-This script performs segmentation predictions using a pre-trained UNet model.
-It supports different input modes:
-  - Prediction only (without ground truth): use --no-gt.
-  - Prediction only with frame-to-video mapping (via CSV): use --no-gt and --csv-path.
-  - Prediction with ground truth: provide ground truth images (do not set --no-gt).
-
-Output options include:
-  - Saving individual frame plots (--save-frame-plots)
-  - Creating a GIF per video (--save-video-gifs)
-  - Creating an MP4 per video (--save-video-mp4s)
-  - Saving metrics (BCE and Dice scores) as CSV (--save-metrics-csv) and as a TXT file.
-
-Required arguments: model path, data directory, output directory, test name.
 """
-
 import argparse
 import logging
 import os
-import time
 from pathlib import Path
+import time
+import warnings
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-import warnings
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
 import pandas as pd
 import imageio
 from tqdm import tqdm
 
+import segmentation_models_pytorch as smp
 from utils.data_loading import BasicDataset
-from unet import UNet
 from utils.utils import plot_img_and_mask  # if needed
-
 from moviepy.editor import ImageSequenceClip
 # --------------------------
 # Helper Functions
 # --------------------------
 
-def load_model(model_path, channels, classes, bilinear):
+def load_old_model(model_path, channels, classes, bilinear):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
     config = checkpoint['config']
@@ -90,24 +98,67 @@ def load_model(model_path, channels, classes, bilinear, use_attention=True):
     return net, device, mask_values
 '''
 
-def predict_img(net, full_img: Image.Image, device: torch.device, scale_factor=1.0, thresholds=[0.5]):
+def load_model(model_path: Path,
+               encoder_name: 'resnet34',#str,
+               encoder_weights: 'imagenet',#str,
+               classes: int = 1,
+               decoder_attention_type: str = None,
+               activation: str = None):
+    """
+    Load a segmentation-models-pytorch U-Net model from checkpoint.
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    checkpoint = torch.load(model_path, map_location=device)
+
+    # Initialize smp.Unet
+    net = smp.Unet(
+        encoder_name=encoder_name,
+        encoder_weights=encoder_weights,
+        in_channels=1,
+        classes=classes,
+        decoder_attention_type=decoder_attention_type,
+        activation=activation
+    )
+    net.load_state_dict(checkpoint['state_dict'])
+    net.to(device=device)
+
+    # Optional mask value mapping
+    mask_values = checkpoint.get('mask_values', [0, 1])
+    logging.info("Model loaded successfully on %s", device)
+    return net, device, mask_values
+
+
+def predict_img(net: torch.nn.Module,
+                full_img: Image.Image,
+                device: torch.device,
+                scale_factor: float = 1.0,
+                thresholds: list = [0.5]):
+    """
+    Run inference on a single PIL image, return binary masks for given thresholds.
+    """
     net.eval()
-    full_img = full_img.convert('L') if net.n_channels == 1 else full_img.convert('RGB')
-    img_np = np.array(full_img, dtype=np.float32)
+    # Always grayscale input
+    img_gray = full_img.convert('L')
+    img_np = np.array(img_gray, dtype=np.float32)
     img_np = BasicDataset.preprocess(img_np, is_mask=False)
-    if net.n_channels == 1 and img_np.ndim == 2:
+
+    # Ensure channel-first
+    if img_np.ndim == 2:
         img_np = np.expand_dims(img_np, axis=0)
-    elif net.n_channels == 3 and img_np.ndim == 3:
-        img_np = np.transpose(img_np, (2, 0, 1))
+
     img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device, dtype=torch.float32)
+
     with torch.no_grad():
-        output = net(img_torch).cpu()
+        output = net(img_torch)  # shape: [1, classes, H, W]
+        output = output.cpu()
+        # Resize to original size
         orig_size = (full_img.size[1], full_img.size[0])
         output = F.interpolate(output, size=orig_size, mode='bilinear', align_corners=False)
-        masks = {}
-        for threshold in thresholds:
-            masks[threshold] = (torch.sigmoid(output) > threshold).long().squeeze().numpy()
+        probs = torch.sigmoid(output)
+
+        masks = {th: (probs > th).long().squeeze().numpy() for th in thresholds}
     return masks
+
 
 def mask_to_image(mask: np.ndarray, mask_values):
     if len(mask_values) == 2 and set(mask_values) == {0, 1}:
@@ -119,7 +170,11 @@ def mask_to_image(mask: np.ndarray, mask_values):
         out[mask == i] = val
     return Image.fromarray(out)
 
-def overlay_prediction_on_image(img_pil: Image.Image, mask: np.ndarray, color=(255, 0, 255), alpha=0.3):
+
+def overlay_prediction_on_image(img_pil: Image.Image,
+                                mask: np.ndarray,
+                                color=(255, 0, 255),
+                                alpha=0.3):
     if img_pil.mode != 'RGB':
         img_pil = img_pil.convert('RGB')
     img_np = np.array(img_pil)
@@ -128,40 +183,30 @@ def overlay_prediction_on_image(img_pil: Image.Image, mask: np.ndarray, color=(2
     result = (alpha * overlay + (1 - alpha) * img_np).astype(np.uint8)
     return Image.fromarray(result)
 
+
 def create_double_plot(original_img, overlay_pred_img, title_text=None):
     fig, axs = plt.subplots(1, 2, figsize=(16, 8), dpi=100)
-    axs[0].imshow(original_img)
-    axs[0].set_title("Original", pad=5)
-    axs[0].axis('off')
-    axs[1].imshow(overlay_pred_img)
-    axs[1].set_title("Prediction Overlay", pad=5)
-    axs[1].axis('off')
+    axs[0].imshow(original_img); axs[0].set_title("Original"); axs[0].axis('off')
+    axs[1].imshow(overlay_pred_img); axs[1].set_title("Prediction Overlay"); axs[1].axis('off')
     if title_text:
         fig.suptitle(title_text, y=0.98, fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     fig.canvas.draw()
-    w, h = fig.canvas.get_width_height()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(*fig.canvas.get_width_height(), 3)
     plt.close(fig)
     return Image.fromarray(buf)
 
+
 def create_triple_plot(original_img, overlay_gt_img, overlay_pred_img, title_text=None):
     fig, axs = plt.subplots(1, 3, figsize=(20, 8), dpi=100)
-    axs[0].imshow(original_img)
-    axs[0].set_title("Original", pad=5)
-    axs[0].axis('off')
-    axs[1].imshow(overlay_gt_img)
-    axs[1].set_title("Ground Truth Overlay", pad=5)
-    axs[1].axis('off')
-    axs[2].imshow(overlay_pred_img)
-    axs[2].set_title("Prediction Overlay", pad=5)
-    axs[2].axis('off')
+    axs[0].imshow(original_img); axs[0].set_title("Original"); axs[0].axis('off')
+    axs[1].imshow(overlay_gt_img); axs[1].set_title("Ground Truth Overlay"); axs[1].axis('off')
+    axs[2].imshow(overlay_pred_img); axs[2].set_title("Prediction Overlay"); axs[2].axis('off')
     if title_text:
         fig.suptitle(title_text, y=0.98, fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     fig.canvas.draw()
-    w, h = fig.canvas.get_width_height()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(*fig.canvas.get_width_height(), 3)
     plt.close(fig)
     return Image.fromarray(buf)
 
@@ -274,13 +319,10 @@ def process_single_image(img_path, net, device, args, mask_values, has_gt, imgs_
     overlay_pred = overlay_prediction_on_image(img, pred_mask, color=(255, 0, 255), alpha=0.3)
 
     # Get predicted probabilities (for BCE loss)
-    img_conv = img.convert('L') if net.n_channels == 1 else img.convert('RGB')
+    img_conv = img.convert('L')
     img_np = np.array(img_conv, dtype=np.float32)
     img_np = BasicDataset.preprocess(img_np, is_mask=False)
-    if net.n_channels == 1 and img_np.ndim == 2:
-        img_np = np.expand_dims(img_np, axis=0)
-    elif net.n_channels == 3 and img_np.ndim == 3:
-        img_np = np.transpose(img_np, (2, 0, 1))
+    img_np = np.expand_dims(img_np, axis=0)
     img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device, dtype=torch.float32)
     with torch.no_grad():
         output = net(img_torch).cpu()
@@ -300,7 +342,10 @@ def process_single_image(img_path, net, device, args, mask_values, has_gt, imgs_
                 gt_arr = gt_arr[:, :, 0]
             gt_binary = (gt_arr > 128).astype(np.uint8)
             intersection = np.sum(pred_mask * gt_binary)
-            dice_score = (2. * intersection) / (np.sum(pred_mask) + np.sum(gt_binary) + 1e-6)
+            if np.sum(pred_mask) == 0 and np.sum(gt_binary) == 0:
+                dice_score = 1.0
+            else:
+                dice_score = (2. * intersection) / (np.sum(pred_mask) + np.sum(gt_binary) + 1e-6)
             gt_tensor = torch.tensor(gt_binary, dtype=torch.float32)
             bce_loss_val = F.binary_cross_entropy(probs, gt_tensor, reduction='mean').item()
             overlay_gt = overlay_prediction_on_image(img, gt_arr, color=(0, 255, 0), alpha=0.3)
@@ -404,7 +449,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     # Create output directories
-    run_output_dir = Path(args.output_dir) / args.test_name
+    run_output_dir = Path(args.output_dir) / f"{args.test_name}_{args.fps}_{args.dataset_split}"
     run_output_dir.mkdir(parents=True, exist_ok=True)
     args.raw_output_dir = run_output_dir / 'raw'
     args.raw_output_dir.mkdir(exist_ok=True)
@@ -423,7 +468,7 @@ def main():
     logging.info(f"Run information written to {run_output_dir / 'run_info.txt'}")
 
     # Load model
-    net, device, mask_values = load_model(Path(args.model_path), args.channels, args.classes, args.bilinear)
+    net, device, mask_values = load_model(Path(args.model_path), encoder_name='resnet34', encoder_weights='imagenet')
 
     # Directories for images and (if available) masks
     data_dir = Path(args.data_dir)
@@ -496,12 +541,30 @@ def main():
                 mp4_path = video_mp4_dir / f"{video_name.replace('.mp4', '')}.mp4"
                 create_mp4(frames, str(mp4_path), fps=args.fps)
 
-            # MP4 output placeholder (integration with a video writer needed)
             # Record per-video metrics
+            dice_mean = np.mean(dice_list)
+            bce_mean = np.mean(bce_list)
+            dice_median = np.median(dice_list)
+            bce_median = np.median(bce_list)
+            dice_25 = np.percentile(dice_list, 25)
+            dice_75 = np.percentile(dice_list, 75)
+            bce_25 = np.percentile(bce_list, 25)
+            bce_75 = np.percentile(bce_list, 75)
+            mean_bce_inv_dice = bce_mean + (1 - dice_mean)
+            median_bce_inv_dice = bce_median + (1 - dice_median)
+
             video_summary = {
                 "Video": video_name,
-                "Dice Mean": np.mean(dice_list) if dice_list else None,
-                "BCE Mean": np.mean(bce_list) if bce_list else None
+                "Dice Mean": dice_mean,
+                "Dice Median": dice_median,
+                "Dice 25th Percentile": dice_25,
+                "Dice 75th Percentile": dice_75,
+                "BCE Mean": bce_mean,
+                "BCE Median": bce_median,
+                "BCE 25th Percentile": bce_25,
+                "BCE 75th Percentile": bce_75,
+                "Mean BCE + Inverse Dice": mean_bce_inv_dice,
+                "Median BCE + Inverse Dice": median_bce_inv_dice,
             }
             global_metrics["data"].append(video_summary)
 

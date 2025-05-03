@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+
+python preprocess_labelbox_export.py --original_dataset_dir "D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0328" --video_notes_csv "D:\Martin\thesis\data\video_notes.csv" --output_dataset_dir "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_test" --project_source "MBSS_Martin" --verbose
+
+
+
 Script to process annotated video exports.
 
 This script:
@@ -54,7 +59,7 @@ def process_dataset(
     # 2. Load and filter the video_notes CSV
     if not os.path.exists(video_notes_csv_path):
         raise FileNotFoundError(f"Cannot find video_notes.csv at {video_notes_csv_path}")
-    df_video_notes = pd.read_csv(video_notes_csv_path, sep=";")
+    df_video_notes = pd.read_csv(video_notes_csv_path, sep=",")
 
     # First, select rows with the desired project_source
     df_video_notes_source = df_video_notes[df_video_notes['source'] == project_source]
@@ -74,13 +79,47 @@ def process_dataset(
     ]
     print(f"After filtering video_notes (not_use==0 and bad_quality==0): {len(df_video_notes_filtered)} rows remain.")
 
-    # Drop duplicates: if there are duplicate entries for a video, keep the first occurrence.
-    df_video_notes_unique = df_video_notes_filtered.drop_duplicates(subset='video_id', keep='first')
-    print(f"Unique videos in video_notes after filtering: {len(df_video_notes_unique)}")
+    # Report duplicates after filtering
+    dupe_counts = df_video_notes_filtered['video_id'] \
+        .value_counts() \
+        .loc[lambda x: x > 1]
+
+    if not dupe_counts.empty:
+        print(f"Found {dupe_counts.sum()} total duplicate rows across {len(dupe_counts)} video_ids:")
+        for vid, cnt in dupe_counts.items():
+            print(f"  Video {vid!r} appears {cnt} times")
+    else:
+        print("No duplicate video_ids found after filtering.")
+
+    # ——— Report videos in notes but missing in the dataset ———
+    notes_ids = set(df_video_notes_filtered['video_id'])
+    # all videos present in the master overview for this project_source
+    overview_source_ids = set(
+        df_overview[df_overview['project_source'] == project_source]['shared_video_id']
+    )
+
+    # Videos in notes but no frames on disk
+    missing_in_overview = notes_ids - overview_source_ids
+    if missing_in_overview:
+        print(f"\nWarning: {len(missing_in_overview)} video_id(s) in video_notes but no matching frames found:")
+        print(list(missing_in_overview))
+    else:
+        print("\nAll video_ids from video_notes have matching frames in the dataset.")
+
+    # ——— Report videos in dataset but not in notes ———
+    missing_in_notes = overview_source_ids - notes_ids
+    if missing_in_notes:
+        print(f"\nWarning: {len(missing_in_notes)} video_id(s) present in frames but not in filtered video_notes:")
+        for vid in sorted(missing_in_notes):
+            print(f"  {vid!r}")
+    else:
+        print("\nAll videos in the dataset are covered by video_notes.")
+
+
 
     # Build a mapping: video_id -> Desired_last_frame (None if missing or 0)
     desired_last_frame_dict = {}
-    for _, row in df_video_notes_unique.iterrows():
+    for _, row in df_video_notes_filtered.iterrows():
         video_id = row['video_id']
         try:
             dlf = int(row['Desired_last_frame'])
@@ -88,7 +127,18 @@ def process_dataset(
         except (ValueError, TypeError):
             desired_last_frame_dict[video_id] = None
 
-    valid_video_ids = set(df_video_notes_unique['video_id'].tolist())
+    # —— New: video_id -> Desired_first_frame (None if ≤0 or missing) ——
+    desired_first_frame_dict = {}
+    for _, row in df_video_notes_filtered.iterrows():
+        vid = row['video_id']
+        try:
+            dff = int(row.get('Desired_first_frame', 0))
+            desired_first_frame_dict[vid] = None if dff <= 0 else dff
+        except (ValueError, TypeError):
+            desired_first_frame_dict[vid] = None
+
+    valid_video_ids = set(df_video_notes_filtered['video_id'].tolist())
+
 
     # 3. Filter the data_overview to only include videos from the filtered video_notes and matching project_source
     df_overview_filtered = df_overview[
@@ -122,10 +172,20 @@ def process_dataset(
             video_exclusion_info[video_id][reason] = 0
         video_exclusion_info[video_id][reason] += 1
 
+    first_frame_skips = 0
+    last_frame_skips = 0
     for _, row in tqdm(df_overview_filtered.iterrows(), total=len(df_overview_filtered), desc="Processing frames"):
         frame_number = int(row['frame'])     # The frame number in the video sequence
         frame_idx = int(row['frame_idx'])      # Used for the file name (e.g., "0.png")
         video_id = row['shared_video_id']
+
+        # 1) Skip frames before Desired_first_frame
+        dfi = desired_first_frame_dict.get(video_id)
+        if dfi is not None and frame_number < dfi:
+            add_exclusion(video_id, "before_desired_first_frame")
+            first_frame_skips += 1
+            skipped_frames += 1
+            continue
 
         # Check if a desired last frame is specified for this video
         desired_last_frame = desired_last_frame_dict.get(video_id, None)
@@ -210,6 +270,7 @@ def process_dataset(
     print(f"All-white mask frames removed: {white_mask_count}")
 
 def main():
+    ''''''
     parser = argparse.ArgumentParser(
         description="Process annotated video exports and prune frames based on video_notes and data_overview."
     )

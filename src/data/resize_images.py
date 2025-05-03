@@ -106,4 +106,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-# python resize_images.py -p ../../data/foreback/processed/val --folders imgs masks -size 512 -m pad_resize --in_place
+# python resize_images.py -p D:\Martin\thesis\data\processed\dataset_0328_final_roi_crop\train --folders imgs masks -size 256 -m pad_resize --in_place --only_stats
+#D:\Martin\thesis\data\processed\dataset_0328_final_roi_crop\train\masks

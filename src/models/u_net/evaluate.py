@@ -1,72 +1,118 @@
-import torch
-import torch.nn.functional as F
-from tqdm import tqdm
-from torch import nn
 import time
-from utils.dice_score import multiclass_dice_coeff, dice_coeff
-from utils.dice_score import dice_loss
-
-def compute_iou(mask_pred, mask_true, threshold=0.5, smooth=1e-6):
-    """
-    Compute Intersection-over-Union (IoU) for a batch.
-    Assumes mask_pred has shape (N, 1, H, W).
-    """
-    pred_bin = (torch.sigmoid(mask_pred) > threshold).float()
-    # Sum over channel, height, and width.
-    intersection = (pred_bin * mask_true).sum(dim=[1, 2, 3])
-    union = pred_bin.sum(dim=[1, 2, 3]) + mask_true.sum(dim=[1, 2, 3]) - intersection
-    iou = (intersection + smooth) / (union + smooth)
-    return iou.mean().item()
-
-
+from contextlib import nullcontext
+import torch
+from torch import nn
 
 @torch.inference_mode()
-def evaluate(net, dataloader, device, amp, criterion, pos_weight=None):
+def evaluate(
+    net: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    amp: bool,
+    criterion: nn.Module,
+    pos_weight: float = None,
+    threshold: float = 0.5,
+    eps: float = 1e-8,
+):
+    """
+       Evaluate the network on the validation set, timing each stage to identify bottlenecks.
+       Returns metric dict including detailed timing breakdowns.
+       """
     net.eval()
-    num_val_batches = len(dataloader)
-    total_loss = 0.0
-    total_weighted_ce = 0.0
-    total_dice = 0.0
-    total_iou = 0.0
+    dtype = torch.float32
 
-    # Create weighted cross entropy function if pos_weight is provided.
-    weighted_ce_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]).to(device)) if pos_weight is not None else nn.BCEWithLogitsLoss()
+    # AMP context: only when on CUDA
+    amp_ctx = torch.cuda.amp.autocast if device.type == 'cuda' else nullcontext
 
-    t0 = time.time()
-    with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-        for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
-            image, mask_true = batch['image'], batch['mask']
-            image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            mask_true = mask_true.to(device=device, dtype=torch.float32)
+    # Secondary BCE loss
+    bce_fn = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([pos_weight], device=device)
+    ) if pos_weight is not None else nn.BCEWithLogitsLoss()
 
-            mask_pred = net(image)
-
-            loss = criterion(mask_pred, mask_true)
-            total_loss += loss.item()
-
-            weighted_ce = weighted_ce_fn(mask_pred, mask_true)
-            total_weighted_ce += weighted_ce.item()
-
-            dice_metric = 1 - dice_loss(torch.sigmoid(mask_pred), mask_true, multiclass=False)
-            total_dice += dice_metric.item()
-
-            iou_metric = compute_iou(mask_pred, mask_true, threshold=0.5)
-            total_iou += iou_metric
-
-    val_time = (time.time() - t0) / 60.0
-
-    net.train()
-    avg_loss = total_loss / max(num_val_batches, 1)
-    avg_weighted_ce = total_weighted_ce / max(num_val_batches, 1)
-    avg_dice = total_dice / max(num_val_batches, 1)
-    avg_iou = total_iou / max(num_val_batches, 1)
-    avg_dice_bce = avg_dice + avg_weighted_ce
-
-    return {
-        'val_loss': avg_loss,
-        'val_weighted_ce': avg_weighted_ce,
-        'val_dice': avg_dice,
-        'val_iou': avg_iou,
-        'val_time': val_time,
-        'val_bce_dice': avg_dice_bce
+    # Accumulators for metrics (float) and timing
+    total_loss = total_bce = total_dice = total_iou = 0.0
+    total_tp = total_fp = total_tn = total_fn = 0.0
+    times = {
+        'data_load': 0.0,
+        'forward': 0.0,
+        'metrics': 0.0,
     }
+
+    # Overall timer
+    epoch_start = time.time()
+
+    with torch.no_grad():
+        for batch in dataloader:
+            # 1) Data load + transfer
+            t0 = time.time()
+            img = batch['image'].to(device, dtype=dtype, memory_format=torch.channels_last)
+            mask = batch['mask'].to(device, dtype=dtype)
+            times['data_load'] += time.time() - t0
+
+            # 2) Forward + loss
+            t1 = time.time()
+            with amp_ctx(enabled=amp):
+                logits = net(img)
+                loss = criterion(logits, mask)
+                bce = bce_fn(logits, mask)
+            times['forward'] += time.time() - t1
+
+            # 3) Prediction and metric computations
+            t2 = time.time()
+            prob = torch.sigmoid(logits)
+            preds = (prob > threshold).to(dtype)
+
+            inter = (preds * mask).sum(dim=[1, 2, 3])
+            p_sum = preds.sum(dim=[1, 2, 3])
+            m_sum = mask.sum(dim=[1, 2, 3])
+            union = p_sum + m_sum
+
+            batch_dice = (2 * inter / (p_sum + m_sum + eps)).mean()
+            batch_iou = (inter / (union - inter + eps)).mean()
+            tp = inter.mean()
+            fp = ((preds * (1 - mask)).sum(dim=[1, 2, 3])).mean()
+            fn = (((1 - preds) * mask).sum(dim=[1, 2, 3])).mean()
+            tn = (((1 - preds) * (1 - mask)).sum(dim=[1, 2, 3])).mean()
+            times['metrics'] += time.time() - t2
+
+            # Accumulate metrics
+            total_loss += loss.item()
+            total_bce += bce.item()
+            total_dice += batch_dice.item()
+            total_iou += batch_iou.item()
+            total_tp += tp.item()
+            total_fp += fp.item()
+            total_fn += fn.item()
+            total_tn += tn.item()
+
+    # Total epoch time
+    total_time = (time.time() - epoch_start) / 60.0
+    net.train()
+
+    # Normalize by batches
+    N = float(max(len(dataloader), 1))
+
+    # Derived metrics
+    precision = total_tp / (total_tp + total_fp + eps)
+    recall = total_tp / (total_tp + total_fn + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    accuracy = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn + eps)
+    specificity = total_tn / (total_tn + total_fp + eps)
+
+    results = {
+        'val_loss': total_loss / N,
+        'val_weighted_ce': total_bce / N,
+        'val_dice': total_dice / N,
+        'val_iou': total_iou / N,
+        'val_precision': precision,
+        'val_recall': recall,
+        'val_f1': f1,
+        'val_accuracy': accuracy,
+        'val_specificity': specificity,
+        'val_time': total_time,
+        # Timing breakdowns (in seconds)
+        'val_time_data_load': times['data_load'],
+        'val_time_forward': times['forward'],
+        'val_time_metrics': times['metrics'],
+    }
+    return results

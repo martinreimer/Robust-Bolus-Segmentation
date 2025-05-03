@@ -1,0 +1,52 @@
+program: train.py
+entity: martinev-fau-erlangen-n-rnberg
+method: random
+metric:
+    goal: minimize
+    name: val-loss
+parameters:
+  optimizer:
+    values: [adam]
+  learning-rate:
+    values: [1e-05, 1e-04, 5e-04, 1e-03]
+  scheduler:
+    values: [plateau, step]
+  lr-mode:
+    value: min
+  lr-patience:
+    value: 3
+  filters:
+    value: "32,64,128,256,512"
+  dataset-path:
+    values: ["D:/Martin/thesis/data/processed/dataset_0328_final", "D:/Martin/thesis/data/processed/dataset_0328_final_roi_crop", "D:/Martin/thesis/data/processed/dataset_0328_final_zoom_80"]
+  mask-suffix:
+    value: _bolus
+  epochs:
+    value: 40
+  batch-size:
+    value: 8
+  combined-bce-weight:
+    value: 1 #1[1, 2, 3]
+  combined-dice-weight:
+    value: 1
+  loss:
+    value: combined
+
+  # Optimizer-specific hyperparameters
+
+  # Adam and Nadam options:
+  adam-beta1:
+    value: 0.9
+  adam-beta2:
+    value: 0.999
+  adam-eps:
+    value: 1e-8
+  adam-weight-decay:
+    value: 0.0001
+
+
+command:
+- C:\\Users\\ly37xoco\\PycharmProjects\\thesis\\.venv\\Scripts\\python.exe
+- ${program}
+- ${args}
+

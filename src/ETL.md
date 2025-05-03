@@ -68,10 +68,12 @@ python preprocess_labelbox_export.py --project_source MBS_Luisa --original_datas
 Merge two or more processed exports into a single dataset:
 
 ```bash
-python create_dataset_from_labelbox_exports.py \
+python create_dataset_from_labelboxexports.py \
   --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded" \
                "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded" \
   --output_path "D:\Martin\thesis\data\processed\dataset_labelbox_export"
+  
+python create_dataset_from_labelboxexports.py --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_test" --output_path "D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504"
   
 python create_dataset_from_labelboxexports.py --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded" "D:\Martin\thesis\data\processed\labelbox_output_mbs_0328_frames_excluded" --output_path "D:\Martin\thesis\data\processed\labelbox_dataset_0328"
 ```
@@ -100,6 +102,10 @@ python resize_images.py \
   
 python resize_images.py -p D:\Martin\thesis\data\processed\labelbox_dataset_0328 --folders imgs masks -size 512 -m pad_resize --in_place
 
+python resize_images.py -p D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504 --folders imgs masks -size 512 -m pad_resize --in_place
+python resize_images.py -p D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504_test_final_roi_crop --folders imgs masks -size 256 -m pad_resize --in_place
+
+
 ```
 
 ### 6. Visualize Dataset (Optional)
@@ -115,6 +121,8 @@ python visualize_dataset.py -p D:\Martin\thesis\data\processed\labelbox_dataset_
 python visualize_dataset.py -p D:\Martin\thesis\data\raw\labelbox_output_mbss_martin -n 1000 --mask_suffix _bolus
 python visualize_dataset.py -p D:\Martin\thesis\data\raw\labelbox_output_mbs -n 1000 --mask_suffix _bolus
 
+python visualize_dataset.py -p D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504 -n 1000 --mask_suffix _bolus
+
 ```
 
 ### 7. Train/Test Split (Optional)
@@ -125,5 +133,5 @@ python create_train_test_split.py \
   --input_dirs "D:\Martin\thesis\data\processed\dataset_labelbox_export" \
   --output_dir "D:\Martin\thesis\data\processed\dataset_train_val_test_split"
 
-python create_train_test_split.py --input_dirs "D:\Martin\thesis\data\processed\labelbox_dataset_0328" --output_dir "D:\Martin\thesis\data\processed\dataset_0328_final"
+python create_train_test_split.py --input_dirs "D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504" --output_dir "D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504_test_final"
 ```
