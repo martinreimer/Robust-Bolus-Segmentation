@@ -9,7 +9,6 @@ python train.py --epochs 25 -d D:\Martin\thesis\data\processed\dataset_labelbox_
 '''
 from __future__ import annotations
 
-import torch
 import csv
 from segmentation_models_pytorch.losses import (
     DiceLoss,
@@ -40,7 +39,6 @@ import torch.nn as nn
 from torch import optim
 from torch.utils.data import DataLoader, Subset
 
-from tqdm import tqdm
 import wandb
 from contextlib import contextmanager
 
@@ -190,14 +188,15 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--use-attention', action='store_true', default=False, help='Use attention gates in U-Net')
 
     # SMP specific options
-
+    parser.add_argument('--smp-model', type=str, default='Unet', choices=['Unet', 'UnetPlusPlus', 'Segformer'], help='Model type in segmentation_models_pytorch. Options: "Unet", "UnetPlusPlus", "Segformer"')
     parser.add_argument('--encoder-name', type=str, default=None, help='Encoder name for segmentation_models_pytorch (f.e. resnet34)')
     parser.add_argument('--encoder-weights', type=str, default=None, help='Pretrained weights for encoder in segmentation_models_pytorch (f.e. imagenet)')
     parser.add_argument('--encoder-depth', type=int, default=5, choices=[3, 4, 5], help='Depth of the encoder in segmentation_models_pytorch (3-5)')
     parser.add_argument('--decoder-interpolation', type=str, default='nearest', choices=['nearest', 'bilinear', 'bicubic', 'area', 'nearest-exact'], help='Interpolation method for decoder in segmentation_models_pytorch')
     parser.add_argument('--decoder-use-norm', type=str, default='batchnorm', choices=[False, 'batchnorm', 'identity', 'layernorm', 'instancenorm', 'inplace'], help='Normalization type for decoder in segmentation_models_pytorch. Options: "batchnorm", "identity", "layernorm", "instancenorm", "inplace"')
 
-
+    # print value for encoder-weights
+    print(f"Encoder weights: {parser.get_default('encoder_weights')}")
     # Optimizer options
     parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'nadam', 'rmsprop', 'sgd', 'adadelta', 'adagrad', 'adamax'],
                         help='Optimizer to use. Options: "adam", "nadam", "rmsprop", "sgd", "adadelta", "adagrad", "adamax"')
@@ -223,7 +222,9 @@ def get_args() -> argparse.Namespace:
     if args.model_source == 'custom':
         if args.encoder_name is not None or args.encoder_weights is not None:
             parser.error("Encoder name and weights are only applicable for segmentation_models_pytorch models.")
-
+    elif args.model_source == 'smp':
+        if args.encoder_weights == "None":
+            args.encoder_weights = None
     if args.dataset_path is None or not os.path.exists(args.dataset_path):
         parser.error("Dataset path is required and must exist.")
     if args.output_dir is None or not os.path.exists(args.output_dir):
@@ -362,13 +363,28 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
     """
     if args.model_source == 'smp':
         # U-Net
-        model = smp.Unet(
-            encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-            decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
-        )
+        if args.smp_model == 'Unet':
+            model = smp.Unet(
+                encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+            )
+        elif args.smp_model == 'UNetPlusPlus':
+            model = smp.UnetPlusPlus(
+                encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+            )
+        elif args.smp_model == 'Segformer':
+            model = smp.Segformer(
+                encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+            )
+        else:
+            raise ValueError(f"Unsupported SMP model: {args.smp_model}")
 
-    else:
+    elif args.model_source == 'custom':
         model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear, use_attention=args.use_attention)
+    else:
+        raise ValueError(f"Unsupported model source: {args.model_source}")
     model = model.to(memory_format=torch.channels_last).to(device=device)
     return model
 
@@ -815,17 +831,9 @@ def train_model(
             except Exception as e:
                 logging.error(f"Error logging validation samples: {e}")
 
-            # once all epochs are done, dump to CSV
-            summary_path = Path(args.output_dir) / "experiments_summary.csv"
-            header = not summary_path.exists()
-            with open(summary_path, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-                if header:
-                    writer.writerow(['run_name', 'best_epoch', 'best_val_loss', 'cli'])
-                writer.writerow([run_name, best_epoch, best_val_loss, cli_line])
-
             if args.save_checkpoint and epoch % 2 == 0:
                 ckpt_path = checkpoints_dir / f'checkpoint_epoch{epoch}.pth'
+
 
                 if args.model_source == 'custom':
                     torch.save({
@@ -845,7 +853,8 @@ def train_model(
                         },
                         'mask_values': [0, 1],
                     }, ckpt_path)
-                if args.model_source == 'smp':
+                elif args.model_source == 'smp':
+
                     torch.save({
                         'epoch': epoch,
                         'global_step': global_step,
@@ -855,6 +864,7 @@ def train_model(
                         'grad_scaler_state': grad_scaler.state_dict() if grad_scaler is not None else None,
                         'config': {
                             'model_source': args.model_source,
+                            'smp_model': args.smp_model,
                             'encoder_name': args.encoder_name,
                             'encoder_weights': args.encoder_weights,
                             'in_channels': 1,
@@ -867,7 +877,7 @@ def train_model(
                         },
                         'mask_values': [0, 1],
                     }, ckpt_path)
-                else: print(f"Checkpoint not saved, model source is not supported")
+                #else: print(f"Checkpoint not saved, model source is not supported")
                 logging.info(f'Checkpoint {epoch} saved to {ckpt_path}')
             try:
                 pass#log_train_augment_preview(train_loader.dataset, fixed_indices_to_track, epoch, experiment)
@@ -878,7 +888,14 @@ def train_model(
         experiment.log({'total_training_time_min': total_training_time})
         logging.info(f"Total training time: {total_training_time:.2f} minutes")
 
-
+        # once all epochs are done, dump to CSV
+        summary_path = Path(args.output_dir) / "experiments_summary.csv"
+        header = not summary_path.exists()
+        with open(summary_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+            if header:
+                writer.writerow(['run_name', 'best_epoch', 'best_val_loss', 'cli', 'training_time', 'timestamp'])
+            writer.writerow([run_name, best_epoch, best_val_loss, cli_line, total_training_time, timestamp])
 
 
 def main():
@@ -893,6 +910,8 @@ def main():
     torch.backends.cudnn.deterministic = False
     setup_logging(output_dir=args.output_dir)
     device = get_device()
+    print(f"aaa-{args.model_source}-")
+
     train_set, val_set = prepare_datasets(args)
     train_loader, val_loader = create_dataloaders(train_set, val_set, batch_size=args.batch_size,num_workers = args.num_workers,persistent_workers = args.persistent_workers)
 

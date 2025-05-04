@@ -18,63 +18,48 @@ COMMON_ARGS=(
 )
 
 # Hyperparameter grids
-losses=(dice) #bce focal tversky
-backbones=(none inceptionresnetv2 inceptionv4 resnet34 mobilenet_v2)
-lrs=(1e-3 1e-4)
-depths=(3 4 5)
+models=(Unet UNetPlusPlus Segformer)
+losses=(dice focal tversky) #bce focal tversky
+backbones=(mobilenet_v2 inceptionresnetv2) # inceptionresnetv2 inceptionv4 resnet34 mobilenet_v2
+lrs=(1e-3 1e-4)# 1e-4)
+depths=(5)
+for model in "${models[@]}"; do
+  for loss in "${losses[@]}"; do
+    for backbone in "${backbones[@]}"; do
+      for lr in "${lrs[@]}"; do
+        for depth in "${depths[@]}"; do
 
-for loss in "${losses[@]}"; do
-  for backbone in "${backbones[@]}"; do
-    for lr in "${lrs[@]}"; do
-      for depth in "${depths[@]}"; do
+          # start your cmd array
+          cmd=(python train.py
+               --epochs 40
+               -l "${lr}"
+               --loss "${loss}"
+          )
 
-        # start your cmd array
-        cmd=(python train.py
-             --epochs 25
-             -l "${lr}"
-             --loss "${loss}"
-        )
+          # splice in all the common args, correctly tokenized
+          cmd+=( "${COMMON_ARGS[@]}" )
 
-        # splice in all the common args, correctly tokenized
-        cmd+=( "${COMMON_ARGS[@]}" )
-
-        if [[ "${backbone}" != "none" ]]; then
           cmd+=( --model-source smp
+                 --smp-model "${model}"
                  --encoder-name "${backbone}"
                  --encoder-weights imagenet
                  --encoder-depth "${depth}"
                  --decoder-interpolation nearest
                  --decoder-use-norm batchnorm
                )
-        else
-          cmd+=( --model-source custom )
-        fi
+          # logfile names
+          base="${loss}__${backbone}__lr${lr}__d${depth}"
+          log="${LOGDIR}/${base}.log"
+          err="${LOGDIR}/${base}.error"
 
-        # logfile names
-        base="${loss}__${backbone}__lr${lr}__d${depth}"
-        log="${LOGDIR}/${base}.log"
-        err="${LOGDIR}/${base}.error"
+          echo "------------------------------------------------------------------------------"
+          echo "RUNNING: ${cmd[*]}"
+          echo " → log → ${log}"
+          echo "------------------------------------------------------------------------------"
 
-        echo "------------------------------------------------------------------------------"
-        echo "RUNNING: ${cmd[*]}"
-        echo " → log → ${log}"
-        echo "------------------------------------------------------------------------------"
+          sleep 2
 
-        # disable exit-on-error so we can capture exit code
-        set +e
-        "${cmd[@]}" 2>&1 | tee "${log}"
-        exit_code=${PIPESTATUS[0]}
-        set -e
-
-        if [ "${exit_code}" -ne 0 ]; then
-          echo "[$(date '+%F %T')] EXIT ${exit_code}" > "${err}"
-          echo "!!! Failed — see ${err}"
-        else
-          rm -f "${err}"
-        fi
-
-        sleep 2
-
+        done
       done
     done
   done

@@ -11,7 +11,7 @@ Example CLI:
         --save-metrics-csv \
         --save-video-mp4s \
         --fps 10 \
-        --dataset-split train \
+        --dataset-split val \
         --plot-metrics
 
 Description:
@@ -63,6 +63,7 @@ import segmentation_models_pytorch as smp
 from utils.data_loading import BasicDataset
 from utils.utils import plot_img_and_mask  # if needed
 from moviepy.editor import ImageSequenceClip
+from unet import UNet
 # --------------------------
 # Helper Functions
 # --------------------------
@@ -71,7 +72,7 @@ def load_old_model(model_path, channels, classes, bilinear):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
     config = checkpoint['config']
-    net = UNet(**config)
+    net = None#UNet(**config)
     net.load_state_dict(checkpoint['state_dict'])
     net.to(device=device)
     mask_values = checkpoint.pop('mask_values', [0, 1])
@@ -99,8 +100,8 @@ def load_model(model_path, channels, classes, bilinear, use_attention=True):
 '''
 
 def load_model(model_path: Path,
-               encoder_name: 'resnet34',#str,
-               encoder_weights: 'imagenet',#str,
+               encoder_name,#str,
+               encoder_weights,#str,
                classes: int = 1,
                decoder_attention_type: str = None,
                activation: str = None):
@@ -109,16 +110,22 @@ def load_model(model_path: Path,
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
+    config = checkpoint.get('config', {})
+    print(config["model_source"])
+    if config["model_source"] == "smp":
+        # remove model_source key from config
+        config.pop("model_source", None)
+        config.pop("smp_model", None)
+        config.pop("decoder_interpolation", None)
+        config.pop("decoder_use_norm", None)
+        net = smp.Unet(**config)
+    elif config["model_source"] == "custom":
+        config.pop("model_source", None)
+        net = UNet(**config)
+    else:
+        # throw an error
+        raise ValueError(f"Unknown model source: {config['model_source']}")
 
-    # Initialize smp.Unet
-    net = smp.Unet(
-        encoder_name=encoder_name,
-        encoder_weights=encoder_weights,
-        in_channels=1,
-        classes=classes,
-        decoder_attention_type=decoder_attention_type,
-        activation=activation
-    )
     net.load_state_dict(checkpoint['state_dict'])
     net.to(device=device)
 
@@ -211,7 +218,7 @@ def create_triple_plot(original_img, overlay_gt_img, overlay_pred_img, title_tex
     return Image.fromarray(buf)
 
 def create_triple_plot_with_metrics(original_img, overlay_gt_img, overlay_pred_img,
-                                    title_text=None, dice_scores=None, bce_losses=None, total_frames=None):
+                                    title_text=None, dice_scores=None, total_frames=None):
     """
     Create a triple plot (original, ground truth overlay, prediction overlay)
     with an additional roll-over metrics graph below it.
@@ -272,21 +279,13 @@ def create_triple_plot_with_metrics(original_img, overlay_gt_img, overlay_pred_i
 
     # Plot inverse Dice on the left y-axis.
     x_vals = list(range(1, num_processed + 1))
-    dice_error = [1 - d for d in dice_scores]
-    line_dice, = ax_dice.plot(x_vals, dice_error, marker='o', linewidth=2, label='1 - Dice')
+    line_dice, = ax_dice.plot(x_vals, dice_scores, marker='o', linewidth=2, label='Dice')
     ax_dice.set_ylim(0, 1)
     ax_dice.set_yticks([0, 0.5, 1])
-    ax_dice.set_ylabel("1 - Dice (lower is better)")
-
-    # Create a second y-axis for the BCE loss.
-    ax_bce = ax_dice.twinx()
-    line_bce, = ax_bce.plot(x_vals, bce_losses, marker='x', linewidth=2, color='tab:orange', label='BCE')
-    ax_bce.set_ylim(0, 3)
-    ax_bce.set_yticks([0, 1, 2, 3])
-    ax_bce.set_ylabel("BCE Loss (lower is better)")
+    ax_dice.set_ylabel("Dice (higher is better)")
 
     # Optionally, add a legend combining both curves.
-    lines = [line_dice, line_bce]
+    lines = [line_dice]
     labels = [line.get_label() for line in lines]
     ax_dice.legend(lines, labels, loc='upper right')
 
@@ -311,90 +310,99 @@ def create_mp4(frames_list, output_path, fps=10):
 # --------------------------
 # Processing Functions
 # --------------------------
-def process_single_image(img_path, net, device, args, mask_values, has_gt, imgs_dir, masks_dir):
+def process_single_image(img_path, net, device, args, mask_values, has_gt, masks_dir):
+    """
+    Runs inference on one frame, computes Dice and confusion (TP/TN/FP/FN).
+    Returns:
+        img (PIL), overlay_pred (PIL), overlay_gt (PIL or None),
+        dice_score (float or None), tp (int), tn (int), fp (int), fn (int)
+    """
     img = Image.open(img_path)
     masks = predict_img(net, img, device=device, thresholds=args.mask_thresholds)
     threshold = args.mask_thresholds[0]
     pred_mask = masks[threshold]
     overlay_pred = overlay_prediction_on_image(img, pred_mask, color=(255, 0, 255), alpha=0.3)
 
-    # Get predicted probabilities (for BCE loss)
-    img_conv = img.convert('L')
-    img_np = np.array(img_conv, dtype=np.float32)
-    img_np = BasicDataset.preprocess(img_np, is_mask=False)
-    img_np = np.expand_dims(img_np, axis=0)
-    img_torch = torch.from_numpy(img_np).unsqueeze(0).to(device, dtype=torch.float32)
-    with torch.no_grad():
-        output = net(img_torch).cpu()
-        orig_size = (img.size[1], img.size[0])
-        output = F.interpolate(output, size=orig_size, mode='bilinear', align_corners=False)
-        probs = torch.sigmoid(output).squeeze()
-
-    overlay_gt = None
     dice_score = None
-    bce_loss_val = None
+    tp = tn = fp = fn = 0
+    overlay_gt = None
+
     if has_gt:
         gt_mask_path = masks_dir / f"{img_path.stem}_bolus.png"
         if gt_mask_path.is_file():
             gt_img = Image.open(gt_mask_path)
-            gt_arr = np.array(gt_img, dtype=np.uint8)
-            if gt_arr.ndim == 3:
-                gt_arr = gt_arr[:, :, 0]
+            gt_arr = np.array(gt_img.convert('L'), dtype=np.uint8)
             gt_binary = (gt_arr > 128).astype(np.uint8)
+
+            # Dice
             intersection = np.sum(pred_mask * gt_binary)
-            if np.sum(pred_mask) == 0 and np.sum(gt_binary) == 0:
+            if pred_mask.sum() == 0 and gt_binary.sum() == 0:
                 dice_score = 1.0
             else:
-                dice_score = (2. * intersection) / (np.sum(pred_mask) + np.sum(gt_binary) + 1e-6)
-            gt_tensor = torch.tensor(gt_binary, dtype=torch.float32)
-            bce_loss_val = F.binary_cross_entropy(probs, gt_tensor, reduction='mean').item()
+                dice_score = (2. * intersection) / (pred_mask.sum() + gt_binary.sum() + 1e-6)
+
+            # Confusion counts
+            pred_bool = pred_mask.astype(bool)
+            gt_bool   = gt_binary.astype(bool)
+            tp = int(np.logical_and(pred_bool, gt_bool).sum())
+            tn = int(np.logical_and(~pred_bool, ~gt_bool).sum())
+            fp = int(np.logical_and(pred_bool, ~gt_bool).sum())
+            fn = int(np.logical_and(~pred_bool, gt_bool).sum())
+
             overlay_gt = overlay_prediction_on_image(img, gt_arr, color=(0, 255, 0), alpha=0.3)
         else:
-            logging.warning(f"Ground truth mask not found: {gt_mask_path}")
+            logging.warning(f"GT mask not found: {gt_mask_path}")
 
-    # Optionally save raw mask
+    # optionally save raw mask
     if not args.no_save:
-        raw_output_path = args.raw_output_dir / f"{img_path.stem}_mask.png"
-        mask_to_image(pred_mask, mask_values).save(raw_output_path)
+        out_path = args.raw_output_dir / f"{img_path.stem}_mask.png"
+        mask_to_image(pred_mask, mask_values).save(out_path)
 
-    return img, overlay_pred, overlay_gt, dice_score, bce_loss_val
-
+    return img, overlay_pred, overlay_gt, dice_score, tp, tn, fp, fn
 
 def process_frames_group(frame_paths, group_name, net, device, args, mask_values, has_gt, masks_dir):
-    """Process a group of frames (either from CSV mapping or all images together)."""
+    """
+    Processes all frames of one video/group, accumulating:
+      - frames_for_video (PIL list)
+      - dice_scores_list (list of floats)
+      - tp_list, tn_list, fp_list, fn_list (lists of ints)
+    """
     frames_for_video = []
     dice_scores_list = []
-    bce_losses_list = []
-
+    tp_list = []
+    tn_list = []
+    fp_list = []
+    fn_list = []
     total_frames = len(frame_paths)
+
     for idx, img_path in enumerate(frame_paths, start=1):
-        img, overlay_pred, overlay_gt, dice_score, bce_loss = process_single_image(
-            img_path, net, device, args, mask_values, has_gt, None, masks_dir)
+        img, overlay_pred, overlay_gt, dice, tp, tn, fp, fn = process_single_image(
+            img_path, net, device, args, mask_values, has_gt, masks_dir)
 
-        dice_scores_list.append(dice_score if dice_score is not None else 0)
-        bce_losses_list.append(bce_loss if bce_loss is not None else 0)
-        metrics_info = (f"1-Dice: {1 - dice_score:.2f} | BCE: {bce_loss:.2f}"
-                        if dice_score is not None and bce_loss is not None else "")
-        title_text = (f"{group_name} | Frame: {idx}/{total_frames} | Threshold: {args.mask_thresholds[0]} | "
-                      f"FPS: {args.fps} | {metrics_info}")
+        dice_scores_list.append(dice if dice is not None else 0)
+        tp_list.append(tp)
+        tn_list.append(tn)
+        fp_list.append(fp)
+        fn_list.append(fn)
 
-        # Use triple plot with metrics if flag is enabled and ground truth is available
-        if has_gt and overlay_gt is not None:
-            if getattr(args, 'plot_metrics', False):
-                plot_img = create_triple_plot_with_metrics(
-                    img, overlay_gt, overlay_pred, title_text=title_text,
-                    dice_scores=dice_scores_list, bce_losses=bce_losses_list, total_frames=total_frames
-                )
-            else:
-                plot_img = create_triple_plot(img, overlay_gt, overlay_pred, title_text=title_text)
+        title = f"{group_name} | Frame: {idx}/{total_frames} | Dice: {dice:.2f}"
+        if has_gt and overlay_gt is not None and args.plot_metrics:
+            plot_img = create_triple_plot_with_metrics(
+                img, overlay_gt, overlay_pred,
+                title_text=title,
+                dice_scores=dice_scores_list,
+                total_frames=total_frames
+            )
         else:
-            plot_img = create_double_plot(img, overlay_pred, title_text=title_text)
+            plot_img = create_double_plot(img, overlay_pred, title_text=title)
 
         if args.save_frame_plots:
-            frame_plot_path = args.viz_pred_dir / f"{group_name}_{img_path.stem}_plot.png"
-            plot_img.save(frame_plot_path)
+            plot_path = args.viz_pred_dir / f"{group_name}_{img_path.stem}_plot.png"
+            plot_img.save(plot_path)
+
         frames_for_video.append(plot_img)
-    return frames_for_video, dice_scores_list, bce_losses_list
+
+    return frames_for_video, dice_scores_list, tp_list, tn_list, fp_list, fn_list
 
 
 def save_metrics(metrics_dict, output_dir, test_name):
@@ -443,20 +451,31 @@ def get_args():
     parser.add_argument('--plot-metrics', action='store_true', help='Use triple plot with metrics if ground truth is available.')
     return parser.parse_args()
 
-
 def main():
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-    # Create output directories
-    run_output_dir = Path(args.output_dir) / f"{args.test_name}_{args.fps}_{args.dataset_split}"
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+    # Create base run directory (independent of split)
+    base_dir = Path(args.output_dir) / f"{args.test_name}"
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    # If user specified a split, make a subfolder for it; otherwise use base_dir itself
+    if args.dataset_split in ('train', 'val', 'test'):
+        run_output_dir = base_dir / args.dataset_split
+    else:
+        run_output_dir = base_dir
+    run_output_dir.mkdir(exist_ok=True)
+
+    # now sub‐dirs under run_output_dir
     args.raw_output_dir = run_output_dir / 'raw'
     args.raw_output_dir.mkdir(exist_ok=True)
+
     args.viz_pred_dir = run_output_dir / 'viz_pred'
     args.viz_pred_dir.mkdir(exist_ok=True)
+
     video_gif_dir = run_output_dir / 'video_gifs'
     video_gif_dir.mkdir(exist_ok=True)
+
     video_mp4_dir = run_output_dir / 'video_mp4s'
     video_mp4_dir.mkdir(exist_ok=True)
 
@@ -480,7 +499,6 @@ def main():
 
     # Load CSV if provided; otherwise process all images together
     if args.csv_path and Path(args.csv_path).is_file():
-        # if args.dataset_split not specified or not train val test, throw error
         if args.dataset_split not in ['train', 'val', 'test']:
             raise ValueError("dataset_split must be one of: train, val, test")
         logging.info(f"Reading CSV mapping: {args.csv_path}")
@@ -497,9 +515,9 @@ def main():
     if grouped is None:
         # Process individual images and/or create one video from all frames if requested.
         all_imgs = sorted(list(imgs_dir.glob('*.png')))
-        frames, dice_list, bce_list = process_frames_group(all_imgs, "all_frames", net, device, args,
-                                                             mask_values, has_gt, masks_dir)
-        # Optionally save video outputs from the collected frames
+        frames, dice_list, tp_list, tn_list, fp_list, fn_list = process_frames_group(
+            all_imgs, "all_frames", net, device, args, mask_values, has_gt, masks_dir)
+
         if args.save_video_gifs and frames:
             gif_path = video_gif_dir / "all_frames.gif"
             create_gif(frames, gif_path, fps=args.fps)
@@ -507,22 +525,20 @@ def main():
         if args.save_video_mp4s and frames:
             mp4_path = video_mp4_dir / "all_frames.mp4"
             create_mp4(frames, str(mp4_path), fps=args.fps)
-        # (MP4 saving would require additional video encoding libraries; here you can integrate one if needed.)
+
         # Record overall metrics
         if dice_list:
             global_metrics["summary"] = {
-                "Overall Dice Mean": np.mean(dice_list),
-                "Overall BCE Mean": np.mean(bce_list)
+                "Overall Dice Mean": np.mean(dice_list)
             }
-            for img_path, d, b in zip(all_imgs, dice_list, bce_list):
-                global_metrics["data"].append({"image": img_path.name, "dice": d, "bce": b})
+            for img_path, d in zip(all_imgs, dice_list):
+                global_metrics["data"].append({"image": img_path.name, "dice": d})
     else:
         # Process each video group separately.
         for video_name, group in grouped:
             group = group.sort_values("new_frame_name")
             frame_paths = []
             for _, row in group.iterrows():
-                # Assumes the CSV column "new_frame_name" contains the frame filename.
                 frame_path = imgs_dir / row["new_frame_name"]
                 if frame_path.is_file():
                     frame_paths.append(frame_path)
@@ -530,9 +546,10 @@ def main():
                     logging.warning(f"Image not found: {frame_path}")
             if not frame_paths:
                 continue
-            frames, dice_list, bce_list = process_frames_group(frame_paths, video_name.replace('.mp4', ''),
-                                                                 net, device, args, mask_values,
-                                                                 has_gt, masks_dir)
+
+            frames, dice_list, tp_list, tn_list, fp_list, fn_list = process_frames_group(
+                frame_paths, video_name.replace('.mp4', ''), net, device, args, mask_values, has_gt, masks_dir)
+
             if args.save_video_gifs and frames:
                 gif_path = video_gif_dir / f"{video_name.replace('.mp4','')}.gif"
                 create_gif(frames, gif_path, fps=args.fps)
@@ -543,34 +560,43 @@ def main():
 
             # Record per-video metrics
             dice_mean = np.mean(dice_list)
-            bce_mean = np.mean(bce_list)
             dice_median = np.median(dice_list)
-            bce_median = np.median(bce_list)
             dice_25 = np.percentile(dice_list, 25)
             dice_75 = np.percentile(dice_list, 75)
-            bce_25 = np.percentile(bce_list, 25)
-            bce_75 = np.percentile(bce_list, 75)
-            mean_bce_inv_dice = bce_mean + (1 - dice_mean)
-            median_bce_inv_dice = bce_median + (1 - dice_median)
+
+            total_tp = sum(tp_list)
+            total_tn = sum(tn_list)
+            total_fp = sum(fp_list)
+            total_fn = sum(fn_list)
+
+            specificity = total_tn / (total_tn + total_fp + 1e-6)
+            recall      = total_tp / (total_tp + total_fn + 1e-6)
+            precision   = total_tp / (total_tp + total_fp + 1e-6)
+            f1          = 2 * precision * recall / (precision + recall + 1e-6)
+            iou         = total_tp / (total_tp + total_fp + total_fn + 1e-6)
 
             video_summary = {
                 "Video": video_name,
-                "Dice Mean": dice_mean,
-                "Dice Median": dice_median,
-                "Dice 25th Percentile": dice_25,
-                "Dice 75th Percentile": dice_75,
-                "BCE Mean": bce_mean,
-                "BCE Median": bce_median,
-                "BCE 25th Percentile": bce_25,
-                "BCE 75th Percentile": bce_75,
-                "Mean BCE + Inverse Dice": mean_bce_inv_dice,
-                "Median BCE + Inverse Dice": median_bce_inv_dice,
+                "Dice Mean": round(dice_mean, 4),
+                "Dice Median": round(dice_median, 4),
+                "Dice 25th Percentile": round(dice_25, 4),
+                "Dice 75th Percentile": round(dice_75, 4),
+                "True Positives": round(total_tp, 4),
+                "True Negatives": round(total_tn, 4),
+                "False Positives": round(total_fp, 4),
+                "False negatives": round(total_fn, 4),
+                "specificity": round(specificity, 4),
+                "recall": round(recall, 4),
+                "precision": round(precision, 4),
+                "f1": round(f1, 4),
+                "iou": round(iou, 4)
             }
             global_metrics["data"].append(video_summary)
 
     # Save overall metrics to a TXT file and optionally CSV.
     save_metrics(global_metrics, run_output_dir, args.test_name)
     logging.info("All predictions complete!")
+
 
 if __name__ == '__main__':
     main()
