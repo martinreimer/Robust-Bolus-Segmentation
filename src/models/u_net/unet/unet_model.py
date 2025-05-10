@@ -4,40 +4,36 @@ import torch.nn.functional as F
 from .unet_parts import *
 
 
-# Updated UNet: Parameterized and flexible
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, filters=[64, 128, 256, 512, 1024], bilinear=True, use_attention=False):
-        """
-        Args:
-            n_channels (int): Number of input channels
-            n_classes (int): Number of output classes
-            filters (list): List of filter sizes for each encoder level (e.g., [64, 128, 256, 512, 1024])
-            bilinear (bool): Use bilinear upsampling if True, else use transposed convolution
-        """
+    def __init__(self, n_channels, n_classes, filters=[64, 128, 256, 512, 1024],
+                 bilinear=True, use_attention=False, norm_type=None):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
         self.filters = filters
-        self.depth = len(filters) - 1  # Number of down/up steps
+        self.depth = len(filters) - 1
 
-        # Encoder
-        self.inc = DoubleConv(n_channels, filters[0])
-        self.downs = nn.ModuleList([Down(filters[i], filters[i+1]) for i in range(self.depth)])
+        self.inc = DoubleConv(n_channels, filters[0], norm_type=norm_type)
+        self.downs = nn.ModuleList([
+            Down(filters[i], filters[i+1], norm_type=norm_type)
+            for i in range(self.depth)
+        ])
+        self.bottleneck = DoubleConv(filters[-1], filters[-1], norm_type=norm_type)
 
-        # Bottleneck
-        self.bottleneck = DoubleConv(filters[-1], filters[-1])
-
-        # Decoder
         self.ups = nn.ModuleList()
-        in_channels = filters[-1]  # Start with bottleneck channels
+        in_channels = filters[-1]
         for i in range(self.depth):
-            skip_channels = filters[-i-2]  # Encoder feature channels
-            out_channels = skip_channels  # Match encoder level
-            self.ups.append(Up(in_channels, skip_channels, out_channels, bilinear, use_attention))
-            in_channels = out_channels  # Next layer’s input is this layer’s output
+            skip_channels = filters[-i-2]
+            out_channels = skip_channels
+            self.ups.append(
+                Up(in_channels, skip_channels, out_channels,
+                   bilinear=bilinear, use_attention=use_attention, norm_type=norm_type)
+            )
+            in_channels = out_channels
 
         self.outc = OutConv(filters[0], n_classes)
+
 
     def forward(self, x):
         # Encoder path

@@ -1,5 +1,7 @@
-'''
+r'''
 python train.py --epochs 40 -b 8 -l 1e-5 --loss combined -d D:\Martin\thesis\data\processed\dataset_0228_final
+
+python train.py --epochs 40 -l 1e-4 --loss dice -b 8 --optimizer adamax --scheduler plateau --mask-suffix _bolus -d D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504_test_final_roi_crop --model-source smp --smp-model Segformer --encoder-name mit_b0 --encoder-weights imagenet --encoder-depth 5 --decoder-interpolation nearest --decoder-use-norm batchnorm
 
 python train.py --epochs 25 -d D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504_test_final_roi_crop -b 8 -l 1e-3 --loss dice -ms _bolus --optimizer adamax --scheduler plateau --model-source smp --encoder-name resnet34 --encoder-weights imagenet --encoder-depth 5 --decoder-interpolation nearest --decoder-use-norm batchnorm
 python train.py --epochs 25 -d D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504_test_final_roi_crop -b 8 -l 1e-3 --loss dice -ms _bolus --optimizer adamax --scheduler plateau
@@ -184,16 +186,18 @@ def get_args() -> argparse.Namespace:
 
     # Modelling specifications
     parser.add_argument('--model-source', type=str, default='custom', choices=['smp', 'custom'], help='Model source: "smp" for segmentation_models_pytorch, "custom" for custom implementation')
+    # custom unet
     parser.add_argument('--filters', type=str, default='64,128,256,512,1024', help='Comma-separated list of filter sizes for U-Net layers (e.g., 32,64,128,256)')
     parser.add_argument('--use-attention', action='store_true', default=False, help='Use attention gates in U-Net')
+    parser.add_argument('--custom-use-norm', type=str, default='None', choices=['batch', 'instance', 'None'], help='Normalization type for custom U-Net. Options: "batch", "instance", None')
 
     # SMP specific options
-    parser.add_argument('--smp-model', type=str, default='Unet', choices=['Unet', 'UnetPlusPlus', 'Segformer'], help='Model type in segmentation_models_pytorch. Options: "Unet", "UnetPlusPlus", "Segformer"')
+    parser.add_argument('--smp-model', type=str, default='Unet', choices=['Unet', 'UNetPlusPlus', 'Segformer'], help='Model type in segmentation_models_pytorch. Options: "Unet", "UnetPlusPlus", "Segformer"')
     parser.add_argument('--encoder-name', type=str, default=None, help='Encoder name for segmentation_models_pytorch (f.e. resnet34)')
     parser.add_argument('--encoder-weights', type=str, default=None, help='Pretrained weights for encoder in segmentation_models_pytorch (f.e. imagenet)')
     parser.add_argument('--encoder-depth', type=int, default=5, choices=[3, 4, 5], help='Depth of the encoder in segmentation_models_pytorch (3-5)')
-    parser.add_argument('--decoder-interpolation', type=str, default='nearest', choices=['nearest', 'bilinear', 'bicubic', 'area', 'nearest-exact'], help='Interpolation method for decoder in segmentation_models_pytorch')
-    parser.add_argument('--decoder-use-norm', type=str, default='batchnorm', choices=[False, 'batchnorm', 'identity', 'layernorm', 'instancenorm', 'inplace'], help='Normalization type for decoder in segmentation_models_pytorch. Options: "batchnorm", "identity", "layernorm", "instancenorm", "inplace"')
+    parser.add_argument('--decoder-interpolation', type=str, default='bilinear', choices=['nearest', 'bilinear', 'bicubic', 'area', 'nearest-exact'], help='Interpolation method for decoder in segmentation_models_pytorch')
+    parser.add_argument('--decoder-use-norm', type=str, default='batchnorm', choices=['False', 'batchnorm', 'identity', 'layernorm', 'instancenorm', 'inplace'], help='Normalization type for decoder in segmentation_models_pytorch. Options: "batchnorm", "identity", "layernorm", "instancenorm", "inplace"')
 
     # print value for encoder-weights
     print(f"Encoder weights: {parser.get_default('encoder_weights')}")
@@ -222,9 +226,13 @@ def get_args() -> argparse.Namespace:
     if args.model_source == 'custom':
         if args.encoder_name is not None or args.encoder_weights is not None:
             parser.error("Encoder name and weights are only applicable for segmentation_models_pytorch models.")
+        if args.custom_use_norm == "None":
+            args.custom_use_norm = None
     elif args.model_source == 'smp':
         if args.encoder_weights == "None":
             args.encoder_weights = None
+        if args.decoder_use_norm == 'False':
+            args.decoder_use_norm = False
     if args.dataset_path is None or not os.path.exists(args.dataset_path):
         parser.error("Dataset path is required and must exist.")
     if args.output_dir is None or not os.path.exists(args.output_dir):
@@ -366,23 +374,25 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
         if args.smp_model == 'Unet':
             model = smp.Unet(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
+                decoder_interpolation=args.decoder_interpolation,
             )
         elif args.smp_model == 'UNetPlusPlus':
             model = smp.UnetPlusPlus(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
             )
         elif args.smp_model == 'Segformer':
             model = smp.Segformer(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=True,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
             )
         else:
             raise ValueError(f"Unsupported SMP model: {args.smp_model}")
 
     elif args.model_source == 'custom':
-        model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear, use_attention=args.use_attention)
+        model = UNet(n_channels=1, n_classes=1, filters=args.filters, bilinear=args.bilinear, use_attention=args.use_attention,
+                     norm_type=args.custom_use_norm)
     else:
         raise ValueError(f"Unsupported model source: {args.model_source}")
     model = model.to(memory_format=torch.channels_last).to(device=device)

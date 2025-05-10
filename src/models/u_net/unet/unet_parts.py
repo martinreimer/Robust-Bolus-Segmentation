@@ -2,33 +2,39 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Unchanged DoubleConv: Two Conv2d -> BN -> ReLU layers
 class DoubleConv(nn.Module):
-    """(convolution => [BN] => ReLU) * 2"""
-    def __init__(self, in_channels, out_channels, mid_channels=None):
+    """(convolution => [BN|IN] => ReLU) * 2"""
+    def __init__(self, in_channels, out_channels, mid_channels=None, norm_type=None):
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
+
+        def norm_layer(channels):
+            if norm_type == 'batch':
+                return nn.BatchNorm2d(channels)
+            elif norm_type == 'instance':
+                return nn.InstanceNorm2d(channels, affine=True)
+            else:
+                return nn.Identity()  # No normalization
+
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(mid_channels),
+            norm_layer(mid_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            norm_layer(out_channels),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
         return self.double_conv(x)
 
-# Unchanged Down: MaxPool followed by DoubleConv
 class Down(nn.Module):
-    """Downscaling with maxpool then double conv"""
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, norm_type=None):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels)
+            DoubleConv(in_channels, out_channels, norm_type=norm_type)
         )
 
     def forward(self, x):
@@ -68,45 +74,34 @@ class AttentionGate(nn.Module):
 
 
 class Up(nn.Module):
-    """Upscaling then double conv"""
-    def __init__(self, in_channels, skip_channels, out_channels, bilinear=True, use_attention=False):
+    def __init__(self, in_channels, skip_channels, out_channels, bilinear=True, use_attention=False, norm_type=None):
         super().__init__()
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
             self.channel_reduction = nn.Conv2d(in_channels, skip_channels, kernel_size=1)
-            concat_channels = skip_channels + skip_channels  # After concatenation
-            self.conv = DoubleConv(concat_channels, out_channels)
         else:
             self.up = nn.ConvTranspose2d(in_channels, skip_channels, kernel_size=2, stride=2)
-            concat_channels = skip_channels + skip_channels
-            self.conv = DoubleConv(concat_channels, out_channels)
+
+        concat_channels = skip_channels + skip_channels
+        self.conv = DoubleConv(concat_channels, out_channels, norm_type=norm_type)
+
         self.use_attention = use_attention
         if use_attention:
-            self.attention_gate = AttentionGate(g_in_channels=in_channels, x_in_channels=in_channels, out_channels=out_channels)
+            self.attention_gate = AttentionGate(
+                g_in_channels=in_channels,
+                x_in_channels=in_channels,
+                out_channels=out_channels
+            )
 
     def forward(self, x, x_skip_con):
-        # Upsample
         x1 = self.up(x)
-        # Reduce channels
         if hasattr(self, 'channel_reduction'):
             x1 = self.channel_reduction(x1)
-        '''
-        # Padding (instead of cropping the skip-con) to match skip connection size
-        diffY = skip_x.size()[2] - x1.size()[2]
-        diffX = skip_x.size()[3] - x1.size()[3]
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
-        #print(f"After padding: x1: {x1.shape}, x2: {x2.shape}")
-        '''
-        # Attention gate
         if self.use_attention:
             x_skip_con = self.attention_gate(g=x1, x=x_skip_con)
-            #print(f"After attention: x1: {x1.shape}, x2: {x2.shape}")
-
-        #print(f"Concatenating: x1: {x1.shape}, x2: {x2.shape}")
-        # Concat and apply conv
         x = torch.cat([x_skip_con, x1], dim=1)
         return self.conv(x)
+
 
 # Unchanged OutConv: Final 1x1 convolution
 class OutConv(nn.Module):

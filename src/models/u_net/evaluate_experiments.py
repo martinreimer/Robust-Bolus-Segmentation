@@ -13,7 +13,7 @@ from tqdm import tqdm
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
 # Path to your original runs summary CSV
-SUMMARY_CSV = Path(r"D:\Martin\thesis\training_runs\experiments_summary.csv")
+SUMMARY_CSV = Path(r"D:\Martin\thesis\training_runs\test.csv")
 
 # Directory where your UNet runs live
 RUNS_DIR = Path(r"D:\Martin\thesis\training_runs\U-Net\runs")
@@ -147,53 +147,87 @@ def main():
         test_csv = run_predict(run_name, ckpt_path, "test")
 
         # 3) Load and annotate
-        df_val  = load_and_annotate_metrics(val_csv,  run_name, cli, epoch, ckpt_path, "val")
+        df_val = load_and_annotate_metrics(val_csv, run_name, cli, epoch, ckpt_path, "val")
         df_test = load_and_annotate_metrics(test_csv, run_name, cli, epoch, ckpt_path, "test")
 
-        # 4) Combine and write per-run detailed summary
+        # Add helper column for identifying AVG/Total rows
+        for df in [df_val, df_test]:
+            df["summary_type"] = "video"
+            df.loc[df["Video"] == "AVG Video", "summary_type"] = "avg_video"
+            df.loc[df["Video"] == "Total Frames", "summary_type"] = "total"
+
+        # 5) Combine and write per-run detailed summary
         df_run = pd.concat([df_val, df_test], ignore_index=True)
         out_csv = OUTPUT_BASE / f"{run_name}_inference_summary.csv"
         df_run.to_csv(out_csv, index=False)
         tqdm.write(f"Wrote per-run summary to {out_csv}")
 
-        # 5) Compute split-level means for summary_experiment_csv
-        metric_cols = [c for c in df_run.columns
-                       if c not in ("Video","run_name","cli","epoch","model_path","split")]
-        means = {}
-        for split_label in ("val", "test"):
-            m = df_run[df_run["split"] == split_label][metric_cols].mean()
-            means[f"{split_label} Dice Mean"]    = m.get("Dice Mean", np.nan)
-            means[f"{split_label} specificity"]  = m.get("specificity", np.nan)
-            means[f"{split_label} recall"]       = m.get("recall", np.nan)
-            means[f"{split_label} precision"]    = m.get("precision", np.nan)
-            means[f"{split_label} f1"]           = m.get("f1", np.nan)
-            means[f"{split_label} iou"]          = m.get("iou", np.nan)
+        # 6) Compute summary for experiments CSV
+        def get_metric(df, video_name, col, split=None):
+            if split:
+                df = df[df["split"] == split]
+            val = df[df["Video"] == video_name][col]
+            return val.values[0] if not val.empty else np.nan
 
-        # Store into summary_data
         summary_data[run_name] = {
             "cli": cli,
-            **means
+            "val Dice Mean (video)": get_metric(df_run, "AVG Video", "Dice Mean", split="val"),
+            "val Dice Mean (frames)": get_metric(df_run, "Total Frames", "Dice Mean", split="val"),
+            "val Dice Median (video)": get_metric(df_run, "AVG Video", "Dice Median", split="val"),
+            "val Dice Median (frames)": get_metric(df_run, "Total Frames", "Dice Median", split="val"),
+            "val Dice 25th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 25th Percentile", split="val"),
+            "val Dice 25th Percentile (frames)": get_metric(df_run, "Total Frames", "Dice 25th Percentile", split="val"),
+            "val Dice 75th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 75th Percentile", split="val"),
+            "val Dice 75th Percentile (frames)": get_metric(df_run, "Total Frames", "Dice 75th Percentile", split="val"),
+            "val Specificity (video)": get_metric(df_run, "AVG Video", "specificity", split="val"),
+            "val Specificity (frames)": get_metric(df_run, "Total Frames", "specificity", split="val"),
+            "val Recall (video)": get_metric(df_run, "AVG Video", "recall", split="val"),
+            "val Recall (frames)": get_metric(df_run, "Total Frames", "recall", split="val"),
+            "val Precision (video)": get_metric(df_run, "AVG Video", "precision", split="val"),
+            "val Precision (frames)": get_metric(df_run, "Total Frames", "precision", split="val"),
+            "val IoU (video)": get_metric(df_run, "AVG Video", "iou", split="val"),
+            "val IoU (frames)": get_metric(df_run, "Total Frames", "iou", split="val"),
+            "val HD95 (video)": get_metric(df_run, "AVG Video", "hd95", split="val"),
+            "val HD95 (frames)": get_metric(df_run, "Total Frames", "hd95", split="val"),
+            "val ASD (video)": get_metric(df_run, "AVG Video", "asd", split="val"),
+            "val ASD (frames)": get_metric(df_run, "Total Frames", "asd", split="val"),
+            "val f1 (video)": get_metric(df_run, "AVG Video", "f1", split="val"),
+            "val f1 (frames)": get_metric(df_run, "Total Frames", "f1", split="val"),
+
+            "test Dice Mean (video)": get_metric(df_run, "AVG Video", "Dice Mean", split="test"),
+            "test Dice Mean (frames)": get_metric(df_run, "Total Frames", "Dice Mean", split="test"),
+            "test Dice Median (video)": get_metric(df_run, "AVG Video", "Dice Median", split="test"),
+            "test Dice Median (frames)": get_metric(df_run, "Total Frames", "Dice Median", split="test"),
+            "test Dice 25th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 25th Percentile", split="test"),
+            "test Dice 25th Percentile (frames)": get_metric(df_run, "Total Frames", "Dice 25th Percentile", split="test"),
+            "test Dice 75th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 75th Percentile", split="test"),
+            "test Dice 75th Percentile (frames)": get_metric(df_run, "Total Frames", "Dice 75th Percentile", split="test"),
+            "test Specificity (video)": get_metric(df_run, "AVG Video", "specificity", split="test"),
+            "test Specificity (frames)": get_metric(df_run, "Total Frames", "specificity", split="test"),
+            "test Recall (video)": get_metric(df_run, "AVG Video", "recall", split="test"),
+            "test Recall (frames)": get_metric(df_run, "Total Frames", "recall", split="test"),
+            "test Precision (video)": get_metric(df_run, "AVG Video", "precision", split="test"),
+            "test Precision (frames)": get_metric(df_run, "Total Frames", "precision", split="test"),
+            "test IoU (video)": get_metric(df_run, "AVG Video", "iou", split="test"),
+            "test IoU (frames)": get_metric(df_run, "Total Frames", "iou", split="test"),
+            "test HD95 (video)": get_metric(df_run, "AVG Video", "hd95", split="test"),
+            "test HD95 (frames)": get_metric(df_run, "Total Frames", "hd95", split="test"),
+            "test ASD (video)": get_metric(df_run, "AVG Video", "asd", split="test"),
+            "test ASD (frames)": get_metric(df_run, "Total Frames", "asd", split="test"),
+            "test f1 (video)": get_metric(df_run, "AVG Video", "f1", split="test"),
+            "test f1 (frames)": get_metric(df_run, "Total Frames", "f1", split="test"),
         }
 
-    # After all runs, write the global summary_experiment_csv_{date}.csv
-    summary_df = pd.DataFrame(summary_data)
-    # Define row order
-    row_order = ["cli"]
-    for split_label in ("val", "test"):
-        row_order += [
-            f"{split_label} Dice Mean",
-            f"{split_label} specificity",
-            f"{split_label} recall",
-            f"{split_label} precision",
-            f"{split_label} f1",
-            f"{split_label} iou",
-        ]
-    summary_df = summary_df.reindex(row_order)
+        # After all runs
+    summary_df = pd.DataFrame.from_dict(summary_data, orient="index")
+    summary_df.index.name = "run_name"
+    summary_df.reset_index(inplace=True)
 
     date_str = datetime.date.today().strftime("%Y%m%d")
     summary_out = OUTPUT_BASE / f"summary_experiment_csv_{date_str}.csv"
-    summary_df.to_csv(summary_out)
+    summary_df.to_csv(summary_out, index=False)
     print(f"Wrote global summary to {summary_out}")
+
 
 if __name__ == "__main__":
     main()

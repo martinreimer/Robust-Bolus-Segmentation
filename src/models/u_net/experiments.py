@@ -31,10 +31,10 @@ COMMON_ARGS = [
 ]
 
 # Hyperparameter grids
-models    = ["Unet", "UNetPlusPlus", "Segformer"]
+models    = ["UNetPlusPlus"]#"Unet", "Segformer"
 losses    = ["dice", "focal", "tversky"]
 backbones= ["mobilenet_v2", "inceptionresnetv2"]
-lrs       = ["1e-3", "1e-4"]
+lrs       = ["1e-3", "1e-4", "1e-5"]
 depths    = [5]
 
 any_failed = False
@@ -43,7 +43,7 @@ for model, loss, backbone, lr, depth in itertools.product(models, losses, backbo
     # Build command
     cmd = [
         PREDICT_PYTHON, str(PREDICT_SCRIPT),
-        "--epochs", "40",
+        "--epochs", "60",
         "-l", lr,
         "--loss", loss,
         *COMMON_ARGS,

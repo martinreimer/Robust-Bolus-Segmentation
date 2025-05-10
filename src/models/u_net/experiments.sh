@@ -18,10 +18,10 @@ COMMON_ARGS=(
 )
 
 # Hyperparameter grids
-models=(Unet UNetPlusPlus Segformer)
+models=(UNetPlusPlus) #Unet Segformer
 losses=(dice focal tversky) #bce focal tversky
 backbones=(mobilenet_v2 inceptionresnetv2) # inceptionresnetv2 inceptionv4 resnet34 mobilenet_v2
-lrs=(1e-3 1e-4)# 1e-4)
+lrs=(1e-3 1e-4 1e-5)# 1e-4)
 depths=(5)
 for model in "${models[@]}"; do
   for loss in "${losses[@]}"; do
@@ -31,7 +31,7 @@ for model in "${models[@]}"; do
 
           # start your cmd array
           cmd=(python train.py
-               --epochs 40
+               --epochs 50
                -l "${lr}"
                --loss "${loss}"
           )

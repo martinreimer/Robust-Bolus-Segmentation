@@ -31,9 +31,15 @@ This repository contains the code and data for my Master's thesis project titled
 ### Includes Code from External Repos:
 - labelbox-export
 - PyTorch U-Net https://github.com/milesial/Pytorch-UNet
+- niqe score
+  - https://github.com/guptapraful/niqe
+- PSNR; SSIM, ..https://sewar.readthedocs.io/en/latest/
+
 
 # Setup
 ```bash
-pip install pandas numpy scikit-learn torch tqdm wandb albumentations opencv-python matplotlib  nvitop moviepy
+python 3.12.6
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install torchinfo sewar moviepy==1.0.3 pandas numpy scikit-learn torch tqdm wandb albumentations opencv-python matplotlib  nvitop moviepy
+pip install -U git+https://github.com/qubvel/segmentation_models.pytorch
 ```

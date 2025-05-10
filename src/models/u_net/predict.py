@@ -1,4 +1,4 @@
-"""
+r'''
 Example CLI:
     python predict.py \
         --test-name winter-valley-234 \
@@ -13,6 +13,8 @@ Example CLI:
         --fps 10 \
         --dataset-split val \
         --plot-metrics
+
+python predict.py --test-name dandy-energy-320 --model-path D:\Martin\thesis\training_runs\U-Net\runs\dandy-energy-320\checkpoints\checkpoint_epoch36.pth --output-dir D:\Martin\thesis\test_runs --data-dir D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop/val --csv-path D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop/data_overview.csv --save-metrics-csv --save-video-mp4s --fps 10 --dataset-split val --plot-metrics
 
 Description:
     This script loads a pre-trained U-Net model from segmentation-models-pytorch (SMP),
@@ -35,7 +37,7 @@ Requirements:
     - moviepy, imageio
     - matplotlib, pandas, PIL
 
-"""
+'''
 import argparse
 import logging
 import os
@@ -60,13 +62,54 @@ import imageio
 from tqdm import tqdm
 
 import segmentation_models_pytorch as smp
-from utils.data_loading import BasicDataset
-from utils.utils import plot_img_and_mask  # if needed
+from .utils.data_loading import BasicDataset
+from .utils.utils import plot_img_and_mask  # if needed
 from moviepy.editor import ImageSequenceClip
-from unet import UNet
+from .unet import UNet
 # --------------------------
 # Helper Functions
 # --------------------------
+
+import numpy as np
+from scipy.spatial.distance import cdist
+from skimage.morphology import binary_erosion
+from skimage.segmentation import find_boundaries
+
+def compute_surface_distances(pred_mask, gt_mask):
+    if np.sum(pred_mask) == 0 and np.sum(gt_mask) == 0:
+        # Both masks empty: perfect alignment
+        return np.array([0.0]), 0.0, 0.0
+
+    pred_surface = find_boundaries(pred_mask, mode='outer')
+    gt_surface = find_boundaries(gt_mask, mode='outer')
+
+    pred_points = np.argwhere(pred_surface)
+    gt_points = np.argwhere(gt_surface)
+    '''
+    if len(pred_points) == 0:
+        logging.warning("Prediction has no boundaries.")
+    if len(gt_points) == 0:
+        logging.warning("Ground truth has no boundaries.")
+    '''
+    if len(pred_points) == 0 or len(gt_points) == 0:
+        return np.array([]), np.nan, np.nan
+
+    dists_pred_to_gt = cdist(pred_points, gt_points).min(axis=1)
+    dists_gt_to_pred = cdist(gt_points, pred_points).min(axis=1)
+
+    surface_dists = np.concatenate([dists_pred_to_gt, dists_gt_to_pred])
+    return surface_dists, dists_pred_to_gt.mean(), dists_gt_to_pred.mean()
+
+
+def compute_hd95_asd(pred_mask, gt_mask):
+    surface_dists, mean_pred_to_gt, mean_gt_to_pred = compute_surface_distances(pred_mask, gt_mask)
+    if surface_dists is None or surface_dists.size == 0:
+        return None, None
+
+    hd95 = np.percentile(surface_dists, 95)
+    asd = (mean_pred_to_gt + mean_gt_to_pred) / 2
+    return hd95, asd
+
 
 def load_old_model(model_path, channels, classes, bilinear):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -78,47 +121,33 @@ def load_old_model(model_path, channels, classes, bilinear):
     mask_values = checkpoint.pop('mask_values', [0, 1])
     logging.info("Model loaded successfully!")
     return net, device, mask_values
-'''
 
-
-def load_model(model_path, channels, classes, bilinear, use_attention=True):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    checkpoint = torch.load(model_path, map_location=device)
-
-    config = checkpoint.get('config', {})
-    config.setdefault('n_channels', channels)
-    config.setdefault('n_classes', classes)
-    config.setdefault('bilinear', bilinear)
-    config.setdefault('use_attention', use_attention)  # fallback value
-
-    net = UNet(**config)
-    net.load_state_dict(checkpoint['state_dict'])
-    net.to(device=device)
-    mask_values = checkpoint.pop('mask_values', [0, 1])
-    logging.info("Model loaded successfully!")
-    return net, device, mask_values
-'''
-
-def load_model(model_path: Path,
-               encoder_name,#str,
-               encoder_weights,#str,
-               classes: int = 1,
-               decoder_attention_type: str = None,
-               activation: str = None):
+def load_model(model_path: Path):
     """
     Load a segmentation-models-pytorch U-Net model from checkpoint.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
     config = checkpoint.get('config', {})
-    print(config["model_source"])
+    print(f"MODEL SOURCE: " + config["model_source"])
     if config["model_source"] == "smp":
+        # print config keys
+        smp_model = config["smp_model"]
+        print(f"MODEL SOURCE: {smp_model}")
         # remove model_source key from config
         config.pop("model_source", None)
         config.pop("smp_model", None)
         config.pop("decoder_interpolation", None)
         config.pop("decoder_use_norm", None)
-        net = smp.Unet(**config)
+        if smp_model.lower() == "unet":
+            net = smp.Unet(**config)
+        elif smp_model.lower() == "unetplusplus":
+            net = smp.UnetPlusPlus(**config)
+        elif smp_model.lower() == "segformer":
+            net = smp.Segformer(**config)
+        else:
+            raise ValueError(f"Unknown SMP model: {smp_model}")
+
     elif config["model_source"] == "custom":
         config.pop("model_source", None)
         net = UNet(**config)
@@ -128,7 +157,6 @@ def load_model(model_path: Path,
 
     net.load_state_dict(checkpoint['state_dict'])
     net.to(device=device)
-
     # Optional mask value mapping
     mask_values = checkpoint.get('mask_values', [0, 1])
     logging.info("Model loaded successfully on %s", device)
@@ -199,7 +227,9 @@ def create_double_plot(original_img, overlay_pred_img, title_text=None):
         fig.suptitle(title_text, y=0.98, fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     fig.canvas.draw()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(*fig.canvas.get_width_height(), 3)
+    w, h = fig.canvas.get_width_height()
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)  # RGBA
+    buf = buf[:, :, :3]  # drop alpha to get RGB
     plt.close(fig)
     return Image.fromarray(buf)
 
@@ -213,7 +243,9 @@ def create_triple_plot(original_img, overlay_gt_img, overlay_pred_img, title_tex
         fig.suptitle(title_text, y=0.98, fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     fig.canvas.draw()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(*fig.canvas.get_width_height(), 3)
+    w, h = fig.canvas.get_width_height()
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)  # RGBA
+    buf = buf[:, :, :3]  # drop alpha to get RGB
     plt.close(fig)
     return Image.fromarray(buf)
 
@@ -290,11 +322,15 @@ def create_triple_plot_with_metrics(original_img, overlay_gt_img, overlay_pred_i
     ax_dice.legend(lines, labels, loc='upper right')
 
     plt.tight_layout(rect=[0, 0, 1, 0.9])
+
+    # draw and convert to image
     fig.canvas.draw()
     w, h = fig.canvas.get_width_height()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)  # RGBA
+    buf = buf[:, :, :3]  # drop alpha to get RGB
     plt.close(fig)
     return Image.fromarray(buf)
+
 
 def create_gif(frames_list, output_path, fps=2):
     frames_np = [np.array(img) for img in frames_list]
@@ -326,6 +362,7 @@ def process_single_image(img_path, net, device, args, mask_values, has_gt, masks
     dice_score = None
     tp = tn = fp = fn = 0
     overlay_gt = None
+    hd95_value = asd_value = None
 
     if has_gt:
         gt_mask_path = masks_dir / f"{img_path.stem}_bolus.png"
@@ -350,6 +387,13 @@ def process_single_image(img_path, net, device, args, mask_values, has_gt, masks
             fn = int(np.logical_and(~pred_bool, gt_bool).sum())
 
             overlay_gt = overlay_prediction_on_image(img, gt_arr, color=(0, 255, 0), alpha=0.3)
+            # HD95 and ASD
+            try:
+                hd95_value, asd_value = compute_hd95_asd(pred_mask, gt_binary)
+            except Exception as e:
+                logging.warning(f"Could not compute HD95/ASD for {img_path.name}: {e}")
+                hd95_value = asd_value = None
+
         else:
             logging.warning(f"GT mask not found: {gt_mask_path}")
 
@@ -358,7 +402,7 @@ def process_single_image(img_path, net, device, args, mask_values, has_gt, masks
         out_path = args.raw_output_dir / f"{img_path.stem}_mask.png"
         mask_to_image(pred_mask, mask_values).save(out_path)
 
-    return img, overlay_pred, overlay_gt, dice_score, tp, tn, fp, fn
+    return img, overlay_pred, overlay_gt, dice_score, tp, tn, fp, fn, hd95_value, asd_value
 
 def process_frames_group(frame_paths, group_name, net, device, args, mask_values, has_gt, masks_dir):
     """
@@ -373,10 +417,12 @@ def process_frames_group(frame_paths, group_name, net, device, args, mask_values
     tn_list = []
     fp_list = []
     fn_list = []
+    hd95_list = []
+    asd_list = []
     total_frames = len(frame_paths)
 
     for idx, img_path in enumerate(frame_paths, start=1):
-        img, overlay_pred, overlay_gt, dice, tp, tn, fp, fn = process_single_image(
+        img, overlay_pred, overlay_gt, dice, tp, tn, fp, fn, hd95_value, asd_value  = process_single_image(
             img_path, net, device, args, mask_values, has_gt, masks_dir)
 
         dice_scores_list.append(dice if dice is not None else 0)
@@ -384,6 +430,8 @@ def process_frames_group(frame_paths, group_name, net, device, args, mask_values
         tn_list.append(tn)
         fp_list.append(fp)
         fn_list.append(fn)
+        hd95_list.append(hd95_value if hd95_value is not None else np.nan)
+        asd_list.append(asd_value if asd_value is not None else np.nan)
 
         title = f"{group_name} | Frame: {idx}/{total_frames} | Dice: {dice:.2f}"
         if has_gt and overlay_gt is not None and args.plot_metrics:
@@ -402,7 +450,7 @@ def process_frames_group(frame_paths, group_name, net, device, args, mask_values
 
         frames_for_video.append(plot_img)
 
-    return frames_for_video, dice_scores_list, tp_list, tn_list, fp_list, fn_list
+    return frames_for_video, dice_scores_list, tp_list, tn_list, fp_list, fn_list, hd95_list, asd_list
 
 
 def save_metrics(metrics_dict, output_dir, test_name):
@@ -451,6 +499,35 @@ def get_args():
     parser.add_argument('--plot-metrics', action='store_true', help='Use triple plot with metrics if ground truth is available.')
     return parser.parse_args()
 
+def calculate_metrics(dice_list, tp_list, tn_list, fp_list, fn_list, hd95_list, asd_list):
+    results = {}
+    # Record per-video metrics
+    results['dice_mean'] = np.mean(dice_list)
+    results['dice_median'] = np.median(dice_list)
+    results['dice_25'] = np.percentile(dice_list, 25)
+    results['dice_75'] = np.percentile(dice_list, 75)
+
+    results['hd95'] = np.nanmean(hd95_list)
+    results['asd'] = np.nanmean(asd_list)
+
+    results['tp'] = sum(tp_list)
+    results['tn'] = sum(tn_list)
+    results['fp'] = sum(fp_list)
+    results['fn'] = sum(fn_list)
+
+    results['specificity'] = results['tn'] / (results['tn'] + results['fp'] + 1e-6)
+    results['recall'] = results['tp'] / (results['tp'] + results['fn'] + 1e-6)
+    results['precision'] = results['tp'] / (results['tp'] + results['fp'] + 1e-6)
+    results['f1'] = 2 * results['precision'] * results['recall'] / (results['precision'] + results['recall'] + 1e-6)
+    results['iou'] = results['tp'] / (results['tp'] + results['fp'] + results['fn'] + 1e-6)
+    # round to 4 decimal places all values all values in for loop
+    for key in results.keys():
+        if key in ['tp', 'tn', 'fp', 'fn']:
+            results[key] = int(results[key])
+        else:
+            results[key] = round(results[key], 4)
+    return results
+
 def main():
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -487,7 +564,7 @@ def main():
     logging.info(f"Run information written to {run_output_dir / 'run_info.txt'}")
 
     # Load model
-    net, device, mask_values = load_model(Path(args.model_path), encoder_name='resnet34', encoder_weights='imagenet')
+    net, device, mask_values = load_model(Path(args.model_path))
 
     # Directories for images and (if available) masks
     data_dir = Path(args.data_dir)
@@ -515,7 +592,7 @@ def main():
     if grouped is None:
         # Process individual images and/or create one video from all frames if requested.
         all_imgs = sorted(list(imgs_dir.glob('*.png')))
-        frames, dice_list, tp_list, tn_list, fp_list, fn_list = process_frames_group(
+        frames, dice_list, tp_list, tn_list, fp_list, fn_list, hd95_list, asd_list = process_frames_group(
             all_imgs, "all_frames", net, device, args, mask_values, has_gt, masks_dir)
 
         if args.save_video_gifs and frames:
@@ -534,6 +611,7 @@ def main():
             for img_path, d in zip(all_imgs, dice_list):
                 global_metrics["data"].append({"image": img_path.name, "dice": d})
     else:
+        dice_overall, frames_overall, tp_overall, tn_overall, fp_overall, fn_overall, hd95_overall, asd_overall = [], [], [], [], [], [], [], []
         # Process each video group separately.
         for video_name, group in grouped:
             group = group.sort_values("new_frame_name")
@@ -547,9 +625,21 @@ def main():
             if not frame_paths:
                 continue
 
-            frames, dice_list, tp_list, tn_list, fp_list, fn_list = process_frames_group(
+            frames, dice_list, tp_list, tn_list, fp_list, fn_list, hd95_list, asd_list = process_frames_group(
                 frame_paths, video_name.replace('.mp4', ''), net, device, args, mask_values, has_gt, masks_dir)
 
+            # Append to global metrics
+            dice_overall.extend(dice_list)
+            frames_overall.extend(frames)
+            tp_overall.extend(tp_list)
+            tn_overall.extend(tn_list)
+            fp_overall.extend(fp_list)
+            fn_overall.extend(fn_list)
+            hd95_overall.extend(hd95_list)
+            asd_overall.extend(asd_list)
+
+
+            # Save video frames as GIF and MP4
             if args.save_video_gifs and frames:
                 gif_path = video_gif_dir / f"{video_name.replace('.mp4','')}.gif"
                 create_gif(frames, gif_path, fps=args.fps)
@@ -559,39 +649,67 @@ def main():
                 create_mp4(frames, str(mp4_path), fps=args.fps)
 
             # Record per-video metrics
-            dice_mean = np.mean(dice_list)
-            dice_median = np.median(dice_list)
-            dice_25 = np.percentile(dice_list, 25)
-            dice_75 = np.percentile(dice_list, 75)
-
-            total_tp = sum(tp_list)
-            total_tn = sum(tn_list)
-            total_fp = sum(fp_list)
-            total_fn = sum(fn_list)
-
-            specificity = total_tn / (total_tn + total_fp + 1e-6)
-            recall      = total_tp / (total_tp + total_fn + 1e-6)
-            precision   = total_tp / (total_tp + total_fp + 1e-6)
-            f1          = 2 * precision * recall / (precision + recall + 1e-6)
-            iou         = total_tp / (total_tp + total_fp + total_fn + 1e-6)
+            results = calculate_metrics(dice_list, tp_list, tn_list, fp_list, fn_list, hd95_list, asd_list)
 
             video_summary = {
                 "Video": video_name,
-                "Dice Mean": round(dice_mean, 4),
-                "Dice Median": round(dice_median, 4),
-                "Dice 25th Percentile": round(dice_25, 4),
-                "Dice 75th Percentile": round(dice_75, 4),
-                "True Positives": round(total_tp, 4),
-                "True Negatives": round(total_tn, 4),
-                "False Positives": round(total_fp, 4),
-                "False negatives": round(total_fn, 4),
-                "specificity": round(specificity, 4),
-                "recall": round(recall, 4),
-                "precision": round(precision, 4),
-                "f1": round(f1, 4),
-                "iou": round(iou, 4)
+                "Frames": len(frame_paths),
+                "Dice Mean": results['dice_mean'],
+                "Dice Median": results['dice_median'],
+                "Dice 25th Percentile": results['dice_25'],
+                "Dice 75th Percentile": results['dice_75'],
+                "True Positives": results['tp'],
+                "True Negatives": results['tn'],
+                "False Positives": results['fp'],
+                "False Negatives": results['fn'],
+                "specificity": results['specificity'],
+                "recall": results['recall'],
+                "precision": results['precision'],
+                "f1": results['f1'],
+                "iou": results['iou'],
+                "hd95": results['hd95'],
+                "asd": results['asd'],
             }
             global_metrics["data"].append(video_summary)
+            # --------------------------
+            # Add Frame Count, AVG and Total Rows
+            # --------------------------
+        if global_metrics["data"]:
+            df = pd.DataFrame(global_metrics["data"])
+            # Total row
+            results = calculate_metrics(dice_overall, tp_overall, tn_overall, fp_overall, fn_overall, hd95_overall, asd_overall)
+
+            df_total = pd.Series({
+                'Video': 'Total Frames',
+                "Frames": len(frames_overall),
+                "Dice Mean": results['dice_mean'],
+                "Dice Median": results['dice_median'],
+                "Dice 25th Percentile": results['dice_25'],
+                "Dice 75th Percentile": results['dice_75'],
+                "True Positives": results['tp'],
+                "True Negatives": results['tn'],
+                "False Positives": results['fp'],
+                "False Negatives": results['fn'],
+                "specificity": results['specificity'],
+                "recall": results['recall'],
+                "precision": results['precision'],
+                "f1": results['f1'],
+                "iou": results['iou'],
+                "hd95": results['hd95'],
+                "asd": results['asd'],
+            })
+            # Avg over videos row
+            # Compute mean over videos (excluding Total row)
+            metric_cols = ['Dice Mean', 'Dice Median', 'Dice 25th Percentile',
+                           'Dice 75th Percentile', 'True Positives', 'True Negatives',
+                           'False Positives', 'False Negatives', 'specificity',
+                           'recall', 'precision', 'f1', 'iou', 'Frames', 'hd95', 'asd']
+            df_avg = df[metric_cols].agg(np.nanmean).round(4)
+            df_avg['Video'] = 'AVG Video'
+
+            # Reorder and append rows
+            df = pd.concat([df, df_avg.to_frame().T, df_total.to_frame().T], ignore_index=True)
+            global_metrics["data"] = df.to_dict(orient='records')
 
     # Save overall metrics to a TXT file and optionally CSV.
     save_metrics(global_metrics, run_output_dir, args.test_name)
