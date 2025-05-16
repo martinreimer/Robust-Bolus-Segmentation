@@ -8,7 +8,7 @@ Quick Infos:
 Run command
 python main.py -pi cl2t3p57f1b5y0764dutw9c2t -o D:\Martin\thesis\data\raw\bolugram_labelbox_output_mbs_0331 -ak eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjbDJ0MmdzaWkydXpiMDc5MzA5aTIxb2xoIiwib3JnYW5pemF0aW9uSWQiOiJjbDJ0MmdzaTcydXphMDc5MzIzaG02d3Z1IiwiYXBpS2V5SWQiOiJjbTNteTR2NjgwbWl5MDd4MGdsaWxmMHdkIiwic2VjcmV0IjoiMWFiYzlmMjQ5NTI0YzNlNDUyNWM4ZTdjMWY2MTVjOTEiLCJpYXQiOjE3MzE5Mjk1NDYsImV4cCI6MjM2MzA4MTU0Nn0.ZILsOumQPEtRFoA6lc_dAhkwfCzzbOVdOuF9LiUT440 
 
-`python labelbox_export/main.py -pi cm5qm2z0c0b8b07zgdc5f52jp -o D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0425`
+`python labelbox_export/main.py -pi cm5qm2z0c0b8b07zgdc5f52jp -o D:\Martin\thesis\data\raw\labelbox_output_mbss_martin_0514`
 
 
 

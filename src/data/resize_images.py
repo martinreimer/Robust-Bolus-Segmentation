@@ -13,7 +13,7 @@ def collect_image_paths(folder_path):
     folder = Path(folder_path)
     if not folder.is_dir():
         raise NotADirectoryError(f"'{folder}' is not a valid directory.")
-    return sorted(folder.glob("*.png"))
+    return sorted(folder.glob("*.jpg"))
 
 def resize_and_center_crop(image_path, target_size, is_mask):
     """
@@ -108,3 +108,7 @@ if __name__ == "__main__":
     main()
 # python resize_images.py -p D:\Martin\thesis\data\processed\dataset_0328_final_roi_crop\train --folders imgs masks -size 256 -m pad_resize --in_place --only_stats
 #D:\Martin\thesis\data\processed\dataset_0328_final_roi_crop\train\masks
+'''
+python resize_images.py -p "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0514_processed" --folders imgs masks -size 256 -m pad_resize --in_place --only_stats
+#D:\Martin\thesis\data\processed\dataset_0328_final_roi_crop\train\masks
+'''

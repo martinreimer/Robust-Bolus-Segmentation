@@ -67,54 +67,78 @@ def create_directory_structure(output_dir):
 
 def copy_files(file_list, src_dir, dest_imgs_dir, dest_masks_dir, split, dataset_name, data_overview):
     """Copies image and mask files, resizes them, and updates the overview log."""
-    for img, mask, old_frame_name, video_name, frame_idx in tqdm(file_list, desc=f"Processing {split} data"):
-        new_id = len(data_overview)
-        new_img_name = f"{new_id}.png"
-        new_mask_name = f"{new_id}_bolus.png"
+    for patient_id, frame_id, video_name, project_source in tqdm(file_list, desc=f"Processing {split} data"):
+        #img, mask, old_frame_name, video_name, frame_idx
+        img_name = f"{frame_id}.jpg"
+        mask_name = f"{frame_id}_bolus.jpg"
 
-        old_img_path = os.path.join(src_dir, "imgs", img)
-        old_mask_path = os.path.join(src_dir, "masks", mask)
+        old_img_path = os.path.join(src_dir, "imgs", img_name)
+        old_mask_path = os.path.join(src_dir, "masks", mask_name)
 
-        new_img_path = os.path.join(dest_imgs_dir, new_img_name)
-        new_mask_path = os.path.join(dest_masks_dir, new_mask_name)
+        new_img_path = os.path.join(dest_imgs_dir, img_name)
+        new_mask_path = os.path.join(dest_masks_dir, mask_name)
 
-        # Copy the original image to the new location
-        shutil.copy2(old_img_path, new_img_path)
+        shutil.copy(old_img_path, new_img_path)
+        # Copy or create a black mask if mask doesn't exist
 
-        # Update data overview with resolution
-        try:
-            img_obj = Image.open(new_img_path)
-            w, h = img_obj.size
-            original_res = f"{w}x{h}"
-        except:
-            original_res = "Resolution_Error"
-            w, h = 512, 512
-
-        # Handle mask existence, create blank if missing
         if os.path.exists(old_mask_path):
-            shutil.copy2(old_mask_path, new_mask_path)
+            shutil.copy(old_mask_path, new_mask_path)
         else:
+            img = Image.open(new_img_path)
+            w, h = img.size
             blank_mask = Image.new("L", (w, h), color=0)
             blank_mask.save(new_mask_path)
 
 
 
         data_overview.append({
-            "video_name": video_name if video_name else '',
-            "frame_idx": frame_idx if frame_idx else '',
-            "old_frame_name": old_frame_name,
-            "new_frame_name": new_img_name,
+            "patient_id": patient_id,
+            "video_name": video_name,
+            "frame_idx": frame_id,
             "split": split,
             "source_dataset": dataset_name,
-            "original_resolution": original_res
         })
+
+def report_videos_per_patient(df) -> None:
+    """
+    Reads a CSV with columns including 'patient_id' and 'video_name',
+    then prints, for each patient_id, the count of unique video_names
+    and the list of those names, sorted by count descending.
+    """
+    # Group by patient_id and collect unique video_names
+    print("[INFO] Reporting videos per patient...")
+    grouped = (
+        df.groupby('patient_id')['video_name']
+        .agg(lambda names: sorted(set(names)))
+        .reset_index(name='videos')
+    )
+    # Count how many unique videos per patient
+    grouped['video_count'] = grouped['videos'].str.len()
+    # Sort descending by count
+    grouped = grouped.sort_values('video_count', ascending=False)
+
+    # Print per-patient details
+    for _, row in grouped.iterrows():
+        vids = ', '.join(row['videos'])
+        print(f"Patient {row['patient_id']} ({row['video_count']} videos): {vids}")
+
+    # Build and print distribution of video_count
+    dist = grouped['video_count'].value_counts().sort_index()
+    print("\nDistribution of video counts:")
+    for num_videos, num_patients in dist.items():
+        print(
+            f"  {num_videos} video{'s' if num_videos != 1 else ''}: {num_patients} patient{'s' if num_patients != 1 else ''}")
+    print("\n\n")
 
 
 def split_dataset_with_overview(data_overview, test_size, val_size, random_seed, dataset_name):
     """Splits the dataset by video names if overview file is present."""
-    grouped = data_overview.groupby('video_name')
-    videos = [(name, group) for name, group in grouped]
+    report_videos_per_patient(df=data_overview)
+    # print out how many videos we have per patient id
 
+    grouped = data_overview.groupby('patient_id')
+    videos = [(name, group) for name, group in grouped]
+    print(f"[INFO] Found {len(videos)} unique Patient IDs in the dataset. In total we have {len(data_overview)} frames.")
     random.seed(random_seed)
     random.shuffle(videos)
 
@@ -127,20 +151,33 @@ def split_dataset_with_overview(data_overview, test_size, val_size, random_seed,
 
     train_files, val_files, test_files = [], [], []
 
+    # Create a mapping of video names to their respective dataframes
+    num_patient_ids, num_videos, num_frames = 0, 0, 0
     for _, group in train_videos:
+        num_videos += len(list(group['video_name'].unique()))
+        num_frames += len(group)
+        num_patient_ids += 1
         for _, row in group.iterrows():
-            train_files.append((row['new_frame_name'], row['new_mask_name'], row['new_frame_name'], row['video_name'],
-                                row['frame_idx']))
+            train_files.append((row['patient_id'], row['frame_idx'], row['video_name'], row['project_source']))
+    print(f"[INFO] Train Split contains {num_patient_ids} patients with {num_videos} unique videos with {num_frames} frames.")
 
+    num_patient_ids, num_videos, num_frames = 0, 0, 0
     for _, group in val_videos:
+        num_videos += len(list(group['video_name'].unique()))
+        num_frames += len(group)
+        num_patient_ids += 1
         for _, row in group.iterrows():
-            val_files.append((row['new_frame_name'], row['new_mask_name'], row['new_frame_name'], row['video_name'],
-                              row['frame_idx']))
+            val_files.append((row['patient_id'], row['frame_idx'], row['video_name'], row['project_source']))
+    print(f"[INFO] Val Split contains {num_patient_ids} patients with {num_videos} unique videos with {num_frames} frames.")
 
+    num_patient_ids, num_videos, num_frames = 0, 0, 0
     for _, group in test_videos:
+        num_videos += len(list(group['video_name'].unique()))
+        num_frames += len(group)
+        num_patient_ids += 1
         for _, row in group.iterrows():
-            test_files.append((row['new_frame_name'], row['new_mask_name'], row['new_frame_name'], row['video_name'],
-                               row['frame_idx']))
+            test_files.append((row['patient_id'], row['frame_idx'], row['video_name'], row['project_source']))
+    print(f"[INFO] Test Split contains {num_patient_ids} patients with {num_videos} unique videos with {num_frames} frames.")
 
     return train_files, val_files, test_files
 
@@ -148,8 +185,8 @@ def split_dataset_with_overview(data_overview, test_size, val_size, random_seed,
 def split_dataset_without_overview(src_dir, test_size, val_size):
     """Splits the dataset sequentially if no overview file is present."""
     imgs = sorted(
-        [f for f in os.listdir(os.path.join(src_dir, "imgs")) if f.endswith('.png') and not f.endswith('_bolus.png')])
-    masks = sorted([f for f in os.listdir(os.path.join(src_dir, "masks")) if f.endswith('_bolus.png')])
+        [f for f in os.listdir(os.path.join(src_dir, "imgs")) if f.endswith('.jpg') and not f.endswith('_bolus.jpg')])
+    masks = sorted([f for f in os.listdir(os.path.join(src_dir, "masks")) if f.endswith('_bolus.jpg')])
 
     total_frames = len(imgs)
     test_count = math.ceil(total_frames * test_size)
@@ -175,11 +212,9 @@ def main():
         overview_path = os.path.join(input_dir, 'data_overview.csv')
         if os.path.isfile(overview_path):
             df_overview = pd.read_csv(overview_path)
-            train_files, val_files, test_files = split_dataset_with_overview(df_overview, args.test_size, args.val_size,
-                                                                             args.random_seed, dataset_name)
+            train_files, val_files, test_files = split_dataset_with_overview(df_overview, args.test_size, args.val_size, args.random_seed, dataset_name)
         else:
-            train_files, val_files, test_files = split_dataset_without_overview(input_dir, args.test_size,
-                                                                                args.val_size)
+            train_files, val_files, test_files = split_dataset_without_overview(input_dir, args.test_size,  args.val_size)
 
         copy_files(train_files, input_dir, os.path.join(args.output_dir, 'train', 'imgs'),
                    os.path.join(args.output_dir, 'train', 'masks'), 'train', dataset_name, data_overview)

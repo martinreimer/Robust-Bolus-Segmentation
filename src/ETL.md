@@ -12,6 +12,9 @@ This pipeline demonstrates how to take data exported from Labelbox and perform a
 2. **Preprocess Exports (Pruning)**  
    Sometimes certain frames need to be removed (e.g., bad cut points). This step prunes those frames based on a curation CSV.
 
+   then also visualizes frames as videos script as sanity check to check if in processing everything went as expected.
+
+   ```bash
 3. **Create Dataset from Multiple Labelbox Exports**  
    Combine multiple separate Labelbox export folders into a single consolidated dataset.
 
@@ -68,10 +71,10 @@ python preprocess_labelbox_export.py --project_source MBS_Luisa --original_datas
 Merge two or more processed exports into a single dataset:
 
 ```bash
-python create_dataset_from_labelboxexports.py \
-  --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_frames_excluded" \
-               "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_frames_excluded" \
-  --output_path "D:\Martin\thesis\data\processed\dataset_labelbox_export"
+
+
+
+
   
 python create_dataset_from_labelboxexports.py --input_paths "D:\Martin\thesis\data\processed\labelbox_output_mbss_martin_0328_test" --output_path "D:\Martin\thesis\data\processed\dataset_labelbox_export_test_2504"
   

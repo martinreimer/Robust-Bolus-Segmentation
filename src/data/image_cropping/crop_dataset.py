@@ -45,13 +45,13 @@ def merge_bounding_boxes(bboxes):
     return (min(xmins), min(ymins), max(xmaxs), max(ymaxs))
 
 
-def expand_bbox(bbox, img_w, img_h, scale=1.0):
-    if scale == 1.0:
+def expand_bbox(bbox, img_w, img_h, scale_w=1.0, scale_h=1.0):
+    if scale_w == 1.0 and scale_h == 1.0:
         return bbox
     xmin, ymin, xmax, ymax = bbox
     w, h = xmax - xmin, ymax - ymin
     cx, cy = xmin + w/2, ymin + h/2
-    nw, nh = w * scale, h * scale
+    nw, nh = w * scale_w, h * scale_h
     nxmin = int(max(0, cx - nw/2))
     nymin = int(max(0, cy - nh/2))
     nxmax = int(min(img_w, cx + nw/2))
@@ -59,9 +59,9 @@ def expand_bbox(bbox, img_w, img_h, scale=1.0):
     return (nxmin, nymin, nxmax, nymax)
 
 
+
 def get_mask_path(orig_root, split, frame_name):
-    base, ext = os.path.splitext(frame_name)
-    mask_name = f"{base}_bolus{ext}"
+    mask_name = f"{frame_name}_bolus.jpg"
     return os.path.join(orig_root, split, "masks", mask_name), mask_name
 
 
@@ -88,7 +88,7 @@ def make_square(bbox, img_w, img_h):
     return (nxmin, nymin, nxmax, nymax)
 
 
-def main(orig_root, new_root, scale):
+def main(orig_root, new_root, scale_w, scale_h):
     # prepare new directory structure
     for split in ["train", "val", "test"]:
         for folder in ["imgs", "masks"]:
@@ -107,7 +107,7 @@ def main(orig_root, new_root, scale):
 
         # collect all mask bboxes
         bboxes = []
-        for frame in group["new_frame_name"]:
+        for frame in group["frame_idx"]:
             mask_path, _ = get_mask_path(orig_root, split, frame)
             if os.path.isfile(mask_path):
                 bb = compute_mask_bounding_box(mask_path)
@@ -115,8 +115,8 @@ def main(orig_root, new_root, scale):
                     bboxes.append(bb)
 
         # open first image for size
-        first_frame = group["new_frame_name"].iloc[0]
-        img0 = Image.open(os.path.join(orig_root, split, "imgs", first_frame))
+        first_frame = str(group["frame_idx"].iloc[0])
+        img0 = Image.open(os.path.join(orig_root, split, "imgs", f"{first_frame}.jpg"))
         img_w, img_h = img0.size
 
         # union or full-frame
@@ -127,15 +127,15 @@ def main(orig_root, new_root, scale):
             print(f"[{split}] Video '{video}' ROI: {video_bbox}")
 
         # expand and square
-        expanded = expand_bbox(video_bbox, img_w, img_h, scale)
+        expanded = expand_bbox(video_bbox, img_w, img_h, scale_w=scale_w, scale_h=scale_h)
         crop_box = make_square(expanded, img_w, img_h)
         print(f"[{split}] Square crop: {crop_box}\n")
 
         # crop & copy all
-        for frame in group["new_frame_name"]:
+        for frame in group["frame_idx"]:
             # image
-            src_img = os.path.join(orig_root, split, "imgs", frame)
-            dst_img = os.path.join(new_root, split, "imgs", frame)
+            src_img = os.path.join(orig_root, split, "imgs", f"{frame}.jpg")
+            dst_img = os.path.join(new_root, split, "imgs", f"{frame}.jpg")
             if os.path.isfile(src_img):
                 Image.open(src_img).crop(crop_box).save(dst_img)
             # mask
@@ -152,14 +152,16 @@ if __name__ == "__main__":
                         help="Path to original dataset root")
     parser.add_argument("--new_dataset_root", required=True,
                         help="Path to write cropped dataset")
-    parser.add_argument("--bbox_scale_factor", type=float, default=1.0,
-                        help="Scale factor to expand ROI bbox before squaring")
+    parser.add_argument("--bbox_scale_width", type=float, default=1.0,
+                        help="Width scale factor for ROI bbox expansion")
+    parser.add_argument("--bbox_scale_height", type=float, default=1.0,
+                        help="Height scale factor for ROI bbox expansion")
     args = parser.parse_args()
-    main(args.original_dataset_root, args.new_dataset_root, args.bbox_scale_factor)
+    main(args.original_dataset_root, args.new_dataset_root, args.bbox_scale_width, args.bbox_scale_height)
 
     '''
-    python apply_roi_cropping.py --original_dataset_root D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final --new_dataset_root D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop --bbox_scale_factor 1.2
+    
+    python crop_dataset.py --original_dataset_root D:/Martin/thesis/data/processed/dataset_normal_0514_final --new_dataset_root D:/Martin/thesis/data/processed/dataset_normal_0514_final_roi_crop --bbox_scale_height 1.1 --bbox_scale_width 1.5
 
-    python resize_images.py -p D:/Martin/thesis/data/raw/abelbox_output_mbss_martin_0328 --folders imgs masks --only_stats -m pad_resize   -size 512 -m pad_resize --in_place
-    raw\labelbox_output_mbss_martin_0328\imgs
+    python resize_images.py -p "D:\Martin\thesis\data\processed\dataset_normal_0514_final_roi_crop\train" --folders imgs masks -size 1024 -m pad_resize --in_place --only_stats
     '''

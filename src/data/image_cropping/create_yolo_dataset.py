@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 def compute_mask_bounding_box(mask_path):
     """
-    Given a path to a mask (PNG), return (xmin, ymin, xmax, ymax)
+    Given a path to a mask (jpg), return (xmin, ymin, xmax, ymax)
     in pixel coordinates. If mask is fully empty, returns None.
     """
     mask = Image.open(mask_path).convert("L")  # Convert to grayscale
@@ -38,15 +38,12 @@ def merge_bounding_boxes(boxes):
     xmaxs = [b[2] for b in boxes]
     ymaxs = [b[3] for b in boxes]
     return (min(xmins), min(ymins), max(xmaxs), max(ymaxs))
-
-def expand_bbox(bbox, image_width, image_height, scale_factor=1.0):
+def expand_bbox(bbox, image_width, image_height, scale_w=1.0, scale_h=1.0):
     """
-    Expand (xmin, ymin, xmax, ymax) around its center by scale_factor.
+    Expand (xmin, ymin, xmax, ymax) around its center by separate width and height scale factors.
     Clamps to image boundaries.
     """
     (xmin, ymin, xmax, ymax) = bbox
-    if scale_factor == 1.0:
-        return bbox  # No change
 
     # Current width/height
     bw = xmax - xmin
@@ -55,8 +52,8 @@ def expand_bbox(bbox, image_width, image_height, scale_factor=1.0):
     cy = ymin + bh / 2.0
 
     # New width/height
-    new_bw = bw * scale_factor
-    new_bh = bh * scale_factor
+    new_bw = bw * scale_w
+    new_bh = bh * scale_h
 
     # Recompute corners, then clamp
     new_xmin = int(cx - new_bw / 2.0)
@@ -71,6 +68,7 @@ def expand_bbox(bbox, image_width, image_height, scale_factor=1.0):
     new_ymax = min(image_height - 1, new_ymax)
 
     return (new_xmin, new_ymin, new_xmax, new_ymax)
+
 
 def yolo_v8_format(bbox, image_width, image_height):
     """
@@ -108,7 +106,8 @@ def create_bbox_dataset(
     original_dataset_root,
     new_bbox_root,
     num_frames_per_video=10,
-    bbox_scale_factor=1.0
+    bbox_scale_w=1.0,
+    bbox_scale_h=1.0
 ):
     """
     Creates a bounding box dataset from an existing segmentation dataset by:
@@ -164,9 +163,8 @@ def create_bbox_dataset(
         frame_rows = group_df.to_dict("records")
 
         for row in frame_rows:
-            frame_name = row["new_frame_name"]
-            base_name = os.path.splitext(frame_name)[0]
-            mask_name = base_name + "_bolus.png"
+            frame_name = str(row["frame_idx"])
+            mask_name = frame_name + "_bolus.jpg"
 
             mask_path = os.path.join(original_dataset_root, split, "masks", mask_name)
             if os.path.exists(mask_path):
@@ -187,8 +185,8 @@ def create_bbox_dataset(
 
         # 3) For each chosen frame, save image, YOLO label, and visualization
         for row in chosen_rows:
-            frame_name = row["new_frame_name"]
-            img_path  = os.path.join(original_dataset_root, split, "imgs", frame_name)
+            frame_name = row["frame_idx"]
+            img_path  = os.path.join(original_dataset_root, split, "imgs", f"{frame_name}.jpg")
             if not os.path.exists(img_path):
                 print(f"Warning: image {img_path} not found, skipping.")
                 continue
@@ -197,19 +195,18 @@ def create_bbox_dataset(
             w, h = image.size
 
             # expand the union bbox
-            expanded_bbox = expand_bbox(video_bbox, w, h, bbox_scale_factor)
+            expanded_bbox = expand_bbox(video_bbox, w, h, scale_w=bbox_scale_w, scale_h=bbox_scale_h)
 
             # YOLO format
             (class_id, x_center, y_center, w_norm, h_norm) = yolo_v8_format(expanded_bbox, w, h)
 
             # new paths (YOLO style)
-            # images/<split>/<filename.png>
+            # images/<split>/<filename.jpg>
             # labels/<split>/<filename.txt>
-            # viz/<split>/<filename.png>
-            new_img_path   = os.path.join(new_bbox_root, "images", split, frame_name)
-            label_filename = os.path.splitext(frame_name)[0] + ".txt"
-            new_label_path = os.path.join(new_bbox_root, "labels", split, label_filename)
-            new_viz_path   = os.path.join(new_bbox_root, "viz", split, frame_name)
+            # viz/<split>/<filename.jpg>
+            new_img_path   = os.path.join(new_bbox_root, "images", split, f"{frame_name}.jpg")
+            new_label_path = os.path.join(new_bbox_root, "labels", split, f"{frame_name}.txt")
+            new_viz_path   = os.path.join(new_bbox_root, "viz", split, f"{frame_name}.jpg")
 
             # save image
             image.save(new_img_path)
@@ -245,8 +242,10 @@ def main():
                         required=False, help="Where to store the new bounding box dataset.")
     parser.add_argument("--num_frames_per_video", type=int, default=20, required=False,
                         help="How many random frames to sample per video (default=10).")
-    parser.add_argument("--bbox_scale_factor", type=float, default=1.2, required=False,
-                        help="Scale factor to expand bounding boxes around their center (default=1.0).")
+    parser.add_argument("--bbox_scale_width", type=float, default=1.0,
+                        help="Width expansion scale (e.g., 1.3 for 30% wider).")
+    parser.add_argument("--bbox_scale_height", type=float, default=1.0,
+                        help="Height expansion scale (e.g., 1.1 for 10% taller).")
 
     args = parser.parse_args()
 
@@ -256,8 +255,10 @@ def main():
         original_dataset_root=args.original_dataset_root,
         new_bbox_root=args.new_bbox_root,
         num_frames_per_video=args.num_frames_per_video,
-        bbox_scale_factor=args.bbox_scale_factor
+        bbox_scale_w=args.bbox_scale_width,
+        bbox_scale_h=args.bbox_scale_height
     )
+
     print("Done.")
 
 
