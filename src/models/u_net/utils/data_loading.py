@@ -63,7 +63,7 @@ class BasicDataset(Dataset):
             # Check valid extension, skip hidden etc.
             name = splitext(file)[0]
             self.img_paths.append(self.images_dir / file)
-            self.mask_paths.append(self.mask_dir / f"{name}{self.mask_suffix}.png")  # or .jpg etc.
+            self.mask_paths.append(self.mask_dir / f"{name}{self.mask_suffix}.png")  # or .png etc.
 
         logging.info(f'Creating {subset} dataset with {len(self.ids)} examples')
 

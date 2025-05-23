@@ -130,8 +130,8 @@ def process_frames(
         if last.get(vid) is not None and num > last[vid]:
             add_exc(vid, 'after_last'); stats['skipped']+=1; continue
 
-        src_f = os.path.join(src_imgs, f"{idx}.png"); dst_f = os.path.join(dst_imgs, f"{idx}.jpg")
-        src_m = os.path.join(src_masks, f"{idx}_bolus.png"); dst_m = os.path.join(dst_masks, f"{idx}_bolus.jpg")
+        src_f = os.path.join(src_imgs, f"{idx}.png"); dst_f = os.path.join(dst_imgs, f"{idx}.png")
+        src_m = os.path.join(src_masks, f"{idx}_bolus.png"); dst_m = os.path.join(dst_masks, f"{idx}_bolus.png")
 
         if not os.path.exists(src_f): add_exc(vid, 'frame_missing'); stats['skipped']+=1; continue
         img = cv2.imread(src_f, cv2.IMREAD_UNCHANGED)
@@ -175,7 +175,7 @@ def analyze_empty_masks(df_new: pd.DataFrame, masks_dir: str, imgs_dir: str, thr
         empties: List[Tuple[str, int, str]] = []
         for _, r in grp.iterrows():
             idx = int(r['frame_idx'])
-            mask_path = os.path.join(masks_dir, f"{idx}_bolus.jpg")
+            mask_path = os.path.join(masks_dir, f"{idx}_bolus.png")
             if os.path.exists(mask_path):
                 m = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
                 if m is not None and np.all(m == 0): empties.append((vid, idx, mask_path))
@@ -184,14 +184,14 @@ def analyze_empty_masks(df_new: pd.DataFrame, masks_dir: str, imgs_dir: str, thr
         if remove_all:
             for vid, idx, mask_path in empties:
                 os.remove(mask_path)
-                img_path = mask_path.replace(f"{idx}_bolus.jpg", f"{idx}.jpg").replace("masks", "imgs")
+                img_path = mask_path.replace(f"{idx}_bolus.png", f"{idx}.png").replace("masks", "imgs")
                 if os.path.exists(img_path): os.remove(img_path)
                 to_remove_set.add((vid, idx))
             print(f"  Removed all {count} empty masks and frames")
         elif threshold is not None and count > threshold:
             for vid, idx, mask_path in empties[threshold:]:
                 os.remove(mask_path)
-                img_path = mask_path.replace(f"{idx}_bolus.jpg", f"{idx}.jpg").replace("masks", "imgs")
+                img_path = mask_path.replace(f"{idx}_bolus.png", f"{idx}.png").replace("masks", "imgs")
                 if os.path.exists(img_path): os.remove(img_path)
                 to_remove_set.add((vid, idx))
             print(f"  Removed {len(empties) - threshold} empty masks and frames beyond threshold {threshold}")

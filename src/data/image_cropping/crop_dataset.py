@@ -61,7 +61,7 @@ def expand_bbox(bbox, img_w, img_h, scale_w=1.0, scale_h=1.0):
 
 
 def get_mask_path(orig_root, split, frame_name):
-    mask_name = f"{frame_name}_bolus.jpg"
+    mask_name = f"{frame_name}_bolus.png"
     return os.path.join(orig_root, split, "masks", mask_name), mask_name
 
 
@@ -116,7 +116,7 @@ def main(orig_root, new_root, scale_w, scale_h):
 
         # open first image for size
         first_frame = str(group["frame_idx"].iloc[0])
-        img0 = Image.open(os.path.join(orig_root, split, "imgs", f"{first_frame}.jpg"))
+        img0 = Image.open(os.path.join(orig_root, split, "imgs", f"{first_frame}.png"))
         img_w, img_h = img0.size
 
         # union or full-frame
@@ -134,8 +134,8 @@ def main(orig_root, new_root, scale_w, scale_h):
         # crop & copy all
         for frame in group["frame_idx"]:
             # image
-            src_img = os.path.join(orig_root, split, "imgs", f"{frame}.jpg")
-            dst_img = os.path.join(new_root, split, "imgs", f"{frame}.jpg")
+            src_img = os.path.join(orig_root, split, "imgs", f"{frame}.png")
+            dst_img = os.path.join(new_root, split, "imgs", f"{frame}.png")
             if os.path.isfile(src_img):
                 Image.open(src_img).crop(crop_box).save(dst_img)
             # mask

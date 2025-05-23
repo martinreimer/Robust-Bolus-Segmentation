@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 def compute_mask_bounding_box(mask_path):
     """
-    Given a path to a mask (jpg), return (xmin, ymin, xmax, ymax)
+    Given a path to a mask (png), return (xmin, ymin, xmax, ymax)
     in pixel coordinates. If mask is fully empty, returns None.
     """
     mask = Image.open(mask_path).convert("L")  # Convert to grayscale
@@ -164,7 +164,7 @@ def create_bbox_dataset(
 
         for row in frame_rows:
             frame_name = str(row["frame_idx"])
-            mask_name = frame_name + "_bolus.jpg"
+            mask_name = frame_name + "_bolus.png"
 
             mask_path = os.path.join(original_dataset_root, split, "masks", mask_name)
             if os.path.exists(mask_path):
@@ -186,7 +186,7 @@ def create_bbox_dataset(
         # 3) For each chosen frame, save image, YOLO label, and visualization
         for row in chosen_rows:
             frame_name = row["frame_idx"]
-            img_path  = os.path.join(original_dataset_root, split, "imgs", f"{frame_name}.jpg")
+            img_path  = os.path.join(original_dataset_root, split, "imgs", f"{frame_name}.png")
             if not os.path.exists(img_path):
                 print(f"Warning: image {img_path} not found, skipping.")
                 continue
@@ -201,12 +201,12 @@ def create_bbox_dataset(
             (class_id, x_center, y_center, w_norm, h_norm) = yolo_v8_format(expanded_bbox, w, h)
 
             # new paths (YOLO style)
-            # images/<split>/<filename.jpg>
+            # images/<split>/<filename.png>
             # labels/<split>/<filename.txt>
-            # viz/<split>/<filename.jpg>
-            new_img_path   = os.path.join(new_bbox_root, "images", split, f"{frame_name}.jpg")
+            # viz/<split>/<filename.png>
+            new_img_path   = os.path.join(new_bbox_root, "images", split, f"{frame_name}.png")
             new_label_path = os.path.join(new_bbox_root, "labels", split, f"{frame_name}.txt")
-            new_viz_path   = os.path.join(new_bbox_root, "viz", split, f"{frame_name}.jpg")
+            new_viz_path   = os.path.join(new_bbox_root, "viz", split, f"{frame_name}.png")
 
             # save image
             image.save(new_img_path)

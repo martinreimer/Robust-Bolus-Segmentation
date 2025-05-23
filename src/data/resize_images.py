@@ -13,7 +13,7 @@ def collect_image_paths(folder_path):
     folder = Path(folder_path)
     if not folder.is_dir():
         raise NotADirectoryError(f"'{folder}' is not a valid directory.")
-    return sorted(folder.glob("*.jpg"))
+    return sorted(folder.glob("*.png"))
 
 def resize_and_center_crop(image_path, target_size, is_mask):
     """

@@ -59,7 +59,16 @@ def create_visualizations(processed_dir: str,
         group_sorted = group.sort_values('frame_idx')
         # Determine video size from first frame
         first_idx = group_sorted.iloc[0]['frame_idx']
-        first_img_path = os.path.join(imgs_dir, f"{first_idx}.jpg")
+        # try jpg first, then png
+        #check if exists
+        if os.path.exists(os.path.join(imgs_dir, f"{first_idx}.jpg")):
+            first_img_path = os.path.join(imgs_dir, f"{first_idx}.jpg")
+        elif os.path.exists(os.path.join(imgs_dir, f"{first_idx}.png")):
+            first_img_path = os.path.join(imgs_dir, f"{first_idx}.png")
+        else:
+            print(f"Warning: No image found for video {vid}, skipping.")
+            continue
+
         img0 = Image.open(first_img_path)
         width, height = img0.size
 
@@ -70,9 +79,16 @@ def create_visualizations(processed_dir: str,
 
         for _, row in group_sorted.iterrows():
             idx = int(row['frame_idx'])
-            frame_path = os.path.join(imgs_dir, f"{idx}.jpg")
-            mask_path = os.path.join(masks_dir, f"{idx}_bolus.jpg")
-
+            # check if jpg first, then png
+            if os.path.exists(os.path.join(imgs_dir, f"{idx}.jpg")):
+                frame_path = os.path.join(imgs_dir, f"{idx}.jpg")
+                mask_path = os.path.join(masks_dir, f"{idx}_bolus.jpg")
+            elif os.path.exists(os.path.join(imgs_dir, f"{idx}.png")):
+                frame_path = os.path.join(imgs_dir, f"{idx}.png")
+                mask_path = os.path.join(masks_dir, f"{idx}_bolus.png")
+            else:
+                print(f"Warning: No image found for frame {idx}, skipping.")
+                continue
             img_pil = Image.open(frame_path)
             if os.path.exists(mask_path):
                 mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)

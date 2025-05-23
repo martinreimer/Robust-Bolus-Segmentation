@@ -69,8 +69,8 @@ def copy_files(file_list, src_dir, dest_imgs_dir, dest_masks_dir, split, dataset
     """Copies image and mask files, resizes them, and updates the overview log."""
     for patient_id, frame_id, video_name, project_source in tqdm(file_list, desc=f"Processing {split} data"):
         #img, mask, old_frame_name, video_name, frame_idx
-        img_name = f"{frame_id}.jpg"
-        mask_name = f"{frame_id}_bolus.jpg"
+        img_name = f"{frame_id}.png"
+        mask_name = f"{frame_id}_bolus.png"
 
         old_img_path = os.path.join(src_dir, "imgs", img_name)
         old_mask_path = os.path.join(src_dir, "masks", mask_name)
@@ -185,8 +185,8 @@ def split_dataset_with_overview(data_overview, test_size, val_size, random_seed,
 def split_dataset_without_overview(src_dir, test_size, val_size):
     """Splits the dataset sequentially if no overview file is present."""
     imgs = sorted(
-        [f for f in os.listdir(os.path.join(src_dir, "imgs")) if f.endswith('.jpg') and not f.endswith('_bolus.jpg')])
-    masks = sorted([f for f in os.listdir(os.path.join(src_dir, "masks")) if f.endswith('_bolus.jpg')])
+        [f for f in os.listdir(os.path.join(src_dir, "imgs")) if f.endswith('.png') and not f.endswith('_bolus.png')])
+    masks = sorted([f for f in os.listdir(os.path.join(src_dir, "masks")) if f.endswith('_bolus.png')])
 
     total_frames = len(imgs)
     test_count = math.ceil(total_frames * test_size)

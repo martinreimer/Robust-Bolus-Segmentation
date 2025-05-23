@@ -13,7 +13,7 @@ from tqdm import tqdm
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
 # Path to your original runs summary CSV
-SUMMARY_CSV = Path(r"D:\Martin\thesis\training_runs\test.csv")
+SUMMARY_CSV = Path(r"D:\Martin\thesis\training_runs\experiments_summary.csv")
 
 # Directory where your UNet runs live
 RUNS_DIR = Path(r"D:\Martin\thesis\training_runs\U-Net\runs")
@@ -26,9 +26,9 @@ PREDICT_PYTHON = sys.executable
 PREDICT_SCRIPT = Path(__file__).parent / "predict.py"
 
 # Constant dataset locations & CSV‐mapping
-VAL_DATA_DIR      = Path(r"D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop/val")
-TEST_DATA_DIR     = Path(r"D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop/test")
-DATA_OVERVIEW_CSV = Path(r"D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop/data_overview.csv")
+VAL_DATA_DIR      = Path(r"D:/Martin/thesis/data/processed/dataset_normal_0514_final_roi_crop/val")
+TEST_DATA_DIR     = Path(r"D:/Martin/thesis/data/processed/dataset_normal_0514_final_roi_crop/test")
+DATA_OVERVIEW_CSV = Path(r"D:/Martin/thesis/data/processed/dataset_normal_0514_final_roi_crop/data_overview.csv")
 
 # Inference parameters
 FPS       = 10
@@ -144,20 +144,20 @@ def main():
 
         # 2) Run inference on val and test
         val_csv  = run_predict(run_name, ckpt_path, "val")
-        test_csv = run_predict(run_name, ckpt_path, "test")
+        #test_csv = run_predict(run_name, ckpt_path, "test")
 
         # 3) Load and annotate
         df_val = load_and_annotate_metrics(val_csv, run_name, cli, epoch, ckpt_path, "val")
-        df_test = load_and_annotate_metrics(test_csv, run_name, cli, epoch, ckpt_path, "test")
+        #df_test = load_and_annotate_metrics(test_csv, run_name, cli, epoch, ckpt_path, "test")
 
         # Add helper column for identifying AVG/Total rows
-        for df in [df_val, df_test]:
+        for df in [df_val]:#, df_test]:
             df["summary_type"] = "video"
             df.loc[df["Video"] == "AVG Video", "summary_type"] = "avg_video"
             df.loc[df["Video"] == "Total Frames", "summary_type"] = "total"
 
         # 5) Combine and write per-run detailed summary
-        df_run = pd.concat([df_val, df_test], ignore_index=True)
+        df_run = df_val# pd.concat([df_val, df_test], ignore_index=True)
         out_csv = OUTPUT_BASE / f"{run_name}_inference_summary.csv"
         df_run.to_csv(out_csv, index=False)
         tqdm.write(f"Wrote per-run summary to {out_csv}")
@@ -169,10 +169,13 @@ def main():
             val = df[df["Video"] == video_name][col]
             return val.values[0] if not val.empty else np.nan
 
+        # su
         summary_data[run_name] = {
             "cli": cli,
             "val Dice Mean (video)": get_metric(df_run, "AVG Video", "Dice Mean", split="val"),
             "val Dice Mean (frames)": get_metric(df_run, "Total Frames", "Dice Mean", split="val"),
+            "val Dice Std (video)": get_metric(df_run, "AVG Video", "Dice Std", split="val"),
+            "val Dice Std (frames)": get_metric(df_run, "Total Frames", "Dice Std", split="val"),
             "val Dice Median (video)": get_metric(df_run, "AVG Video", "Dice Median", split="val"),
             "val Dice Median (frames)": get_metric(df_run, "Total Frames", "Dice Median", split="val"),
             "val Dice 25th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 25th Percentile", split="val"),
@@ -191,13 +194,20 @@ def main():
             "val HD95 (frames)": get_metric(df_run, "Total Frames", "hd95", split="val"),
             "val ASD (video)": get_metric(df_run, "AVG Video", "asd", split="val"),
             "val ASD (frames)": get_metric(df_run, "Total Frames", "asd", split="val"),
+            "val Frames No GT (video)": get_metric(df_run, "AVG Video", "Frames No GT", split="val"),
+            "val Frames No GT (frames)": get_metric(df_run, "Total Frames", "Frames No GT", split="val"),
+            "val Frames No Pred (video)": get_metric(df_run, "AVG Video", "Frames No Pred", split="val"),
+            "val Frames No Pred (frames)": get_metric(df_run, "Total Frames", "Frames No Pred", split="val"),
             "val f1 (video)": get_metric(df_run, "AVG Video", "f1", split="val"),
             "val f1 (frames)": get_metric(df_run, "Total Frames", "f1", split="val"),
-
+        }
+        '''
             "test Dice Mean (video)": get_metric(df_run, "AVG Video", "Dice Mean", split="test"),
             "test Dice Mean (frames)": get_metric(df_run, "Total Frames", "Dice Mean", split="test"),
             "test Dice Median (video)": get_metric(df_run, "AVG Video", "Dice Median", split="test"),
             "test Dice Median (frames)": get_metric(df_run, "Total Frames", "Dice Median", split="test"),
+            "test Dice Std (video)": get_metric(df_run, "AVG Video", "Dice Std", split="test"),
+            "test Dice Std (frames)": get_metric(df_run, "Total Frames", "Dice Std", split="test"),
             "test Dice 25th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 25th Percentile", split="test"),
             "test Dice 25th Percentile (frames)": get_metric(df_run, "Total Frames", "Dice 25th Percentile", split="test"),
             "test Dice 75th Percentile (video)": get_metric(df_run, "AVG Video", "Dice 75th Percentile", split="test"),
@@ -216,9 +226,14 @@ def main():
             "test ASD (frames)": get_metric(df_run, "Total Frames", "asd", split="test"),
             "test f1 (video)": get_metric(df_run, "AVG Video", "f1", split="test"),
             "test f1 (frames)": get_metric(df_run, "Total Frames", "f1", split="test"),
+            "test Frames No GT (video)": get_metric(df_run, "AVG Video", "Frames No GT", split="test"),
+            "test Frames No GT (frames)": get_metric(df_run, "Total Frames", "Frames No GT", split="test"),
+            "test Frames No Pred (video)": get_metric(df_run, "AVG Video", "Frames No Pred", split="test"),
+            "test Frames No Pred (frames)": get_metric(df_run, "Total Frames", "Frames No Pred", split="test"),
         }
+        '''
 
-        # After all runs
+    # After all runs
     summary_df = pd.DataFrame.from_dict(summary_data, orient="index")
     summary_df.index.name = "run_name"
     summary_df.reset_index(inplace=True)

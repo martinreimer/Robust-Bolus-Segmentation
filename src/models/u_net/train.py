@@ -137,26 +137,29 @@ def get_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
 
-    parser.add_argument('--img-size', type=int, nargs=2, metavar=('H', 'W'), default=[256, 256], help = 'Input image height and width (e.g. 256 256)')
-    parser.add_argument('--num-workers', type=int, default=0, help = 'Number of DataLoader workers')
+    parser.add_argument('--num-workers', type=int, default=12, help = 'Number of DataLoader workers')
     parser.add_argument('--persistent-workers', action='store_true', default=False, help = 'Keep DataLoader workers alive between epochs')
     parser.add_argument('--seed', type=int, default=42, help = 'Random seed for torch, numpy, python.random')
 
-
+    parser.add_argument('--early-stopping-patience', type=int, default=7,
+                        help='Stop training if no improvement after this many epochs.')
 
     # Dataset options
     parser.add_argument('--dataset-path', '-d', type=str, help='Path to the dataset. Defaults to current directory.')
+    parser.add_argument('--mask-suffix', '-ms', type=str, default='_bolus',
+                        help='Suffix for mask files. Defaults to "_bolus".')
+
+    # Quick Check options
     parser.add_argument('--train-samples', '-ts', type=int, default=None,
                         help='Maximum number of training samples to use. For Quick Checks.')
     parser.add_argument('--val-samples', '-vs', type=int, default=None,
                         help='Maximum number of validation samples to use. For Quick Checks.')
-    parser.add_argument('--mask-suffix', '-ms', type=str, default='_bolus',
-                        help='Suffix for mask files. Defaults to "_bolus".')
+
     # Output directory
     parser.add_argument('--output-dir', type=str, default='D:/Martin/thesis/training_runs', help='Directory to store all outputs (runs, checkpoints, logs, etc.). Default is "D:/Martin/thesis/training_runs".')
     # Checkpoint options
-    parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint',
-                        help='Do not save checkpoints after each epoch')
+    parser.add_argument('--no-save-checkpoint', action='store_false', dest='save_checkpoint', help='Do not save checkpoints after each epoch')
+
     # Training parameters
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=8, help='Batch size')
@@ -198,9 +201,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--encoder-depth', type=int, default=5, choices=[3, 4, 5], help='Depth of the encoder in segmentation_models_pytorch (3-5)')
     parser.add_argument('--decoder-interpolation', type=str, default='bilinear', choices=['nearest', 'bilinear', 'bicubic', 'area', 'nearest-exact'], help='Interpolation method for decoder in segmentation_models_pytorch')
     parser.add_argument('--decoder-use-norm', type=str, default='batchnorm', choices=['False', 'batchnorm', 'identity', 'layernorm', 'instancenorm', 'inplace'], help='Normalization type for decoder in segmentation_models_pytorch. Options: "batchnorm", "identity", "layernorm", "instancenorm", "inplace"')
+    parser.add_argument('--decoder-channels', type=str, default='1024, 512, 256, 128, 64', help='Comma-separated list of decoder channels for segmentation_models_pytorch (e.g., 256,128,64,32)')
 
-    # print value for encoder-weights
-    print(f"Encoder weights: {parser.get_default('encoder_weights')}")
     # Optimizer options
     parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'nadam', 'rmsprop', 'sgd', 'adadelta', 'adagrad', 'adamax'],
                         help='Optimizer to use. Options: "adam", "nadam", "rmsprop", "sgd", "adadelta", "adagrad", "adamax"')
@@ -217,9 +219,17 @@ def get_args() -> argparse.Namespace:
     # for RMSprop
     parser.add_argument('--rmsprop-momentum', type=float, default=0.9, help='Momentum for RMSprop optimizer (default: 0.9)')
     parser.add_argument('--rmsprop-weight-decay', type=float, default=1e-8, help='Weight decay for RMSprop optimizer (default: 1e-8)')
-
+    print(f"Num workers: {parser.get_default('num_workers')}")
 
     args = parser.parse_args()
+    # print decoder channels out and type also
+    if args.decoder_channels is not None:
+        # transform to list
+        try:
+            args.decoder_channels = [int(c) for c in args.decoder_channels.split(',')]
+        except ValueError:
+            parser.error("Invalid decoder channels. Please provide a comma-separated list of integers (e.g., 32,64,128,256).")
+        print(f"Decoder channels: {args.decoder_channels} - {type(args.decoder_channels)}")
 
     # Validate arguments
     # check if we choose custom model, that smp specific arguments are not set
@@ -233,6 +243,10 @@ def get_args() -> argparse.Namespace:
             args.encoder_weights = None
         if args.decoder_use_norm == 'False':
             args.decoder_use_norm = False
+
+    # based on tversky alpha, calculate beta
+    if args.tversky_alpha is not None and args.tversky_beta is None:
+        args.tversky_beta = 1 - args.tversky_alpha
     if args.dataset_path is None or not os.path.exists(args.dataset_path):
         parser.error("Dataset path is required and must exist.")
     if args.output_dir is None or not os.path.exists(args.output_dir):
@@ -374,17 +388,19 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
         if args.smp_model == 'Unet':
             model = smp.Unet(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
-                decoder_interpolation=args.decoder_interpolation,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_norm=args.decoder_use_norm,
+                decoder_interpolation=args.decoder_interpolation, decoder_channels=args.decoder_channels,
             )
         elif args.smp_model == 'UNetPlusPlus':
             model = smp.UnetPlusPlus(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
-                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
+                decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth,
+                decoder_channels=args.decoder_channels,
             )
         elif args.smp_model == 'Segformer':
             model = smp.Segformer(
                 encoder_name=args.encoder_name, encoder_weights=args.encoder_weights, in_channels=1, classes=1,
+                decoder_channels=args.decoder_channels, decoder_interpolation=args.decoder_interpolation,
                 decoder_attention_type=None, activation=None, encoder_depth=args.encoder_depth, decoder_use_batchnorm=args.decoder_use_norm,
             )
         else:
@@ -665,7 +681,6 @@ def dump_experiment_info(
 
     # 1) Gather basic info
     cli_line = " ".join(sys.argv)
-    H, W = args.img_size
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -674,7 +689,6 @@ def dump_experiment_info(
     with open(info_txt, "w") as f:
         f.write("=== Experiment Configuration ===\n")
         f.write(f"CLI: {cli_line}\n")
-        f.write(f"Image size  : {H}×{W}\n")
         f.write(f"Num workers : {args.num_workers}\n")
         f.write(f"Persistent workers: {args.persistent_workers}\n")
         f.write(f"Seed        : {args.seed}\n\n")
@@ -688,7 +702,7 @@ def dump_experiment_info(
     summary_txt = run_dir / "model_summary.txt"
     model_info = summary(
         model,
-        input_size=(1, in_channels, H, W),
+        input_size=(1, in_channels, 512, 512),
         verbose=0
     )
 
@@ -712,8 +726,9 @@ def train_model(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pos_weight = compute_imbalance_pos_weight(train_loader.dataset)
     # keep track of the best val_loss & epoch
-    best_val_loss = float('inf')
+    best_val_loss, best_epoch_val_dice = float('inf'), 0
     best_epoch    = 0
+    epochs_without_improvement = 0
 
     with wandb_run(project='U-Net', config=vars(args), output_dir=args.output_dir) as experiment:
         #set up
@@ -815,7 +830,14 @@ def train_model(
             # keep track of the best
             if val_metrics['val_loss'] < best_val_loss:
                 best_val_loss = val_metrics['val_loss']
+                best_epoch_val_dice = val_metrics['val_dice']
                 best_epoch = epoch
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= args.early_stopping_patience: #early-stopping-patience
+                    logging.info(f"Early stopping triggered after {args.early_stopping_patience} epochs without improvement.")
+                    experiment.log({'early_stopped': True})
+                    break
 
             # ── Weight & Gradient Histograms ────────────────────────────────────
             for name, param in model.named_parameters():
@@ -825,12 +847,13 @@ def train_model(
                     "epoch": epoch
                 })
                 # gradients (if they exist)
+                '''
                 if param.grad is not None:
                     experiment.log({
                         f"grads/{name}": wandb.Histogram(param.grad.detach().cpu().numpy()),
                         "epoch": epoch
                     })
-
+                '''
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_metrics['val_loss'])
             else:
@@ -860,11 +883,11 @@ def train_model(
                             'filters': args.filters,
                             'bilinear': args.bilinear,
                             'use_attention': args.use_attention,
+                            'norm_type': args.custom_use_norm
                         },
                         'mask_values': [0, 1],
                     }, ckpt_path)
                 elif args.model_source == 'smp':
-
                     torch.save({
                         'epoch': epoch,
                         'global_step': global_step,
@@ -884,6 +907,8 @@ def train_model(
                             'encoder_depth': args.encoder_depth,
                             'decoder_interpolation': args.decoder_interpolation,
                             'decoder_use_norm': args.decoder_use_norm,
+                            'decoder_channels': args.decoder_channels,
+                            'encoder_depth': args.encoder_depth,
                         },
                         'mask_values': [0, 1],
                     }, ckpt_path)
@@ -904,9 +929,9 @@ def train_model(
         with open(summary_path, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
             if header:
-                writer.writerow(['run_name', 'best_epoch', 'best_val_loss', 'cli', 'training_time', 'timestamp'])
-            writer.writerow([run_name, best_epoch, best_val_loss, cli_line, total_training_time, timestamp])
-
+                writer.writerow(['run_name', 'best_epoch', 'best_val_loss', 'best_epoch_val_dice', 'cli', 'training_time', 'timestamp'])
+            writer.writerow([run_name, best_epoch, best_val_loss, best_epoch_val_dice, cli_line, total_training_time, timestamp])
+            print(f"Summary written to {summary_path}")
 
 def main():
     """

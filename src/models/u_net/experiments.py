@@ -1,49 +1,67 @@
 #!/usr/bin/env python3
 """
-Replaces the original bash loop for running experiments.
-Uses the same Python interpreter (venv) for subprocesses via sys.executable.
+Randomized sweep runner with valid encoder-depth ↔ decoder-channels mapping.
+Prints errors to CLI for failed runs. Logs experiment stdout separately.
 """
+
 import sys
 import subprocess
-import itertools
+import random
 import time
 from pathlib import Path
 from datetime import datetime
+import itertools
 
-# Use the same Python interpreter (virtualenv) for the training script
+# Setup
+SEED = 42
+N_SAMPLES = 160
+
+random.seed(SEED)
+
 PREDICT_PYTHON = sys.executable
 PREDICT_SCRIPT = Path(__file__).parent / "train.py"
-
-# Directory to stash per-run logs
 LOGDIR = Path("logs")
 LOGDIR.mkdir(exist_ok=True)
 
-# Your dataset path
-DATASET = Path("D:/Martin/thesis/data/processed/dataset_labelbox_export_test_2504_test_final_roi_crop")
+DATASET = Path("D:/Martin/thesis/data/processed/dataset_normal_0514_final_roi_crop")
 
-# Base arguments common to all runs
 COMMON_ARGS = [
-    "-b", "8",
+    "-b", "6", #"8",
     "--optimizer", "adamax",
     "--scheduler", "plateau",
     "--mask-suffix", "_bolus",
     "-d", str(DATASET),
 ]
 
-# Hyperparameter grids
-models    = ["UNetPlusPlus"]#"Unet", "Segformer"
-losses    = ["dice", "focal", "tversky"]
-backbones= ["mobilenet_v2", "inceptionresnetv2"]
-lrs       = ["1e-3", "1e-4", "1e-5"]
-depths    = [5]
+# Hyperparameter space
+models = ["Unet"]#, "UNetPlusPlus"]
+losses = ["dice", "focal", "tversky"] #bce_dice
+backbones = ["mobilenet_v2", "inceptionresnetv2"]
+use_norm = ["batchnorm"]
+lrs = ["1e-4", "5e-4", "1e-3"]#["1e-4", "5e-4", "1e-3"]
+depths = [3, 4, 5]
+base_channels = [16, 32, 64, 64, 128]
+adam_weight_decay = [1e-4, 1e-5, 1e-6]
+
+def make_decoder_channels(depth, base):
+    return [base * (2 ** i) for i in reversed(range(depth))]
+
+# Sample combinations
+all_combos = list(itertools.product(models, losses, backbones, lrs, depths, base_channels, use_norm, adam_weight_decay))
+sampled_combos = random.sample(all_combos, k=N_SAMPLES)
 
 any_failed = False
+counter = 0
+for i, (model, loss, backbone, lr, depth, base, norm, adam_weight_decay) in enumerate(sampled_combos):
+    counter += 1
+    if counter < 23:
+        continue
+    decoder_channels = make_decoder_channels(depth, base)
 
-for model, loss, backbone, lr, depth in itertools.product(models, losses, backbones, lrs, depths):
-    # Build command
+
     cmd = [
         PREDICT_PYTHON, str(PREDICT_SCRIPT),
-        "--epochs", "60",
+        "--epochs", "40",
         "-l", lr,
         "--loss", loss,
         *COMMON_ARGS,
@@ -53,40 +71,33 @@ for model, loss, backbone, lr, depth in itertools.product(models, losses, backbo
         "--encoder-weights", "imagenet",
         "--encoder-depth", str(depth),
         "--decoder-interpolation", "nearest",
-        "--decoder-use-norm", "batchnorm",
+        "--decoder-use-norm", norm,
+        "--decoder-channels", ",".join(map(str, decoder_channels)),
     ]
+    # Conditionally add loss-specific hyperparameters
+    if loss in ["focal", "bce_dice"]:
+        focal_alpha = random.choice([0.15, 0.25, 0.3, 0.5, 0.75])
+        focal_gamma = random.choice([2.0, 4.0, 8.0])
+        cmd += ["--focal-alpha", str(focal_alpha), "--focal-gamma", str(focal_gamma)]
 
-    # Log filenames
-    base = f"{loss}__{backbone}__lr{lr}__d{depth}"
-    log = LOGDIR / f"{base}.log"
-    err = LOGDIR / f"{base}.error"
+    if loss == "tversky":
+        tversky_alpha = random.choice([0.4, 0.5, 0.6, 0.7, 0.75, 0.8])
+        cmd += ["--tversky-alpha", str(tversky_alpha)]
+
+    # Optimizer-specific hyperparams
+    cmd += ["--adam-weight-decay", str(adam_weight_decay)]  # Always include if you're always using Adam/Adamax
+
+    base_name = f"{i:02d}__{loss}__{backbone}__lr{lr}__d{depth}__ch{base}"
 
     print("------------------------------------------------------------------------------")
     print("RUNNING:", " ".join(cmd))
-    print(" → log →", log)
     print("------------------------------------------------------------------------------")
 
-    # Run subprocess, redirect both stdout and stderr to the log file
-    with log.open("w") as lf:
-        process = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
-        return_code = process.wait()
+    process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+    return_code = process.wait()
 
-    # Handle success/failure
     if return_code != 0:
         any_failed = True
-        with err.open("w") as ef:
-            ef.write(f"[{datetime.now().strftime('%F %T')}] EXIT {return_code}\n")
-        print(f"!!! Failed — see {err}")
-    else:
-        if err.exists():
-            err.unlink()
+        print(f"❌ FAILED: {base_name} — Exit code {return_code}")
 
     time.sleep(2)
-
-# Summary and exit code
-if any_failed:
-    print(f"Some runs failed; see {LOGDIR} for details.")
-    sys.exit(1)
-else:
-    print(f"All experiments done. Logs are in {LOGDIR}/")
-    sys.exit(0)
